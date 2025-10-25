@@ -1,0 +1,14 @@
+{
+    "events":{
+        "示例课程":{
+            "click": "True",
+            "time": 60,
+            "mode": "blackboard"
+        },
+        "示例课程-2":{
+            "click": "False",
+            "time": -180,
+            "mode": "whiteboard"
+        }
+    }
+}

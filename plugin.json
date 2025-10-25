@@ -1,0 +1,16 @@
+{
+    "name": "显示今日课程",
+    "description": "显示今日课程",
+    "version": "1.0.0",
+    "plugin_ver": 1,
+    "author": "Yersmagit",
+    "settings": false,
+    "display_name": "显示今日课程",
+
+    "url": "https://github.com/Yersmagit/cw-easi-control",
+    "branch": "main",
+
+    "update_date": "2025/04/06",
+    
+    "entry_point": "main:Plugin"
+}
