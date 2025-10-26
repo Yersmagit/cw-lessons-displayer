@@ -3,9 +3,9 @@
 <h1>Lessons Displayer</h1>
 <p>展示今天的课程！</p>
 
-[![星标](https://img.shields.io/github/stars/Yersmagit/cw-easi-control?style=for-the-badge&color=orange&label=星标)](https://github.com/Yersmagit/cw-easi-control)
-[![开源许可](https://img.shields.io/badge/license-MIT-darkgreen.svg?label=开源许可证&style=for-the-badge)](https://github.com/Yersmagit/cw-easi-control)
-[![下载量](https://img.shields.io/github/downloads/Yersmagit/cw-easi-control/total.svg?label=下载量&color=green&style=for-the-badge)](https://github.com/Yersmagit/cw-easi-control)
+[![星标](https://img.shields.io/github/stars/Yersmagit/cw-easi-control?style=for-the-badge&color=orange&label=星标)](https://github.com/Yersmagit/cw-lessons-displayer)
+[![开源许可](https://img.shields.io/badge/license-MIT-darkgreen.svg?label=开源许可证&style=for-the-badge)](https://github.com/Yersmagit/cw-lessons-displayer)
+[![下载量](https://img.shields.io/github/downloads/Yersmagit/cw-easi-control/total.svg?label=下载量&color=green&style=for-the-badge)](https://github.com/Yersmagit/cw-lessons-displayer)
 
 </div>
 
