@@ -1,6 +1,6 @@
 <div align="center">
 </img src="icon.png" alt="插件图标" width="18%">
-<h1>EasiControl</h1>
+<h1>Lessons Displayer</h1>
 <p>展示今天的课程！</p>
 
 [![星标](https://img.shields.io/github/stars/Yersmagit/cw-easi-control?style=for-the-badge&color=orange&label=星标)](https://github.com/Yersmagit/cw-easi-control)
