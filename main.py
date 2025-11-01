@@ -17,7 +17,7 @@ import ctypes
 from ctypes import wintypes
 
 # 为插件创建独立的logger
-logger = logging.getLogger("lessons_displayer")
+logger = logging.getLogger("cw-lessons-displayer")
 
 # 假设插件基类（根据实际项目结构调整导入路径）
 try:
@@ -28,7 +28,7 @@ except ImportError:
         def __init__(self, app_context: Dict[str, Any], plugin_method: Any):
             self.app_contexts = app_context
             self.plugin_method = plugin_method
-            self.plugin_name = "lessons_displayer"
+            self.plugin_name = "cw-lessons-displayer"
             self.plugin_version = "1.0.0"
             self.plugin_author = "Yersmagit"
             
@@ -165,7 +165,7 @@ class Plugin(PluginBase):
         
         # 配置插件专用日志 - 修正为插件自己的目录
         base_directory = self.app_contexts.get('Base_Directory', '.')
-        plugin_log_dir = os.path.join(base_directory, "plugins", "lessons_displayer", "log")
+        plugin_log_dir = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "log")
         os.makedirs(plugin_log_dir, exist_ok=True)
         
         # 配置独立的日志处理器
@@ -252,6 +252,14 @@ class Plugin(PluginBase):
         # 新增小组件列表状态跟踪
         self.has_valid_widgets = False  # 是否有有效的小组件列表
         self.initial_widget_check_done = False  # 初始小组件检查是否完成
+
+        # 新增鼠标隐藏相关变量
+        self.mouse_hidden = False  # 鼠标是否已隐藏
+        self.mouse_stationary_time = 0  # 鼠标静止时间（秒）
+        self.last_mouse_position = None  # 上次鼠标位置
+        self.mouse_hide_timer = None  # 鼠标隐藏计时器
+        self.mouse_check_interval = 100  # 鼠标检查间隔（毫秒）
+        self.mouse_hide_delay = 2000  # 鼠标隐藏延迟（毫秒）
         
         logger.info("今日课程 插件初始化完成")
     
@@ -262,7 +270,7 @@ class Plugin(PluginBase):
             logger.removeHandler(handler)
         
         # 创建基本的文件处理器（不使用RotatingFileHandler）
-        log_file = os.path.join(log_dir, "lessons_displayer.log")
+        log_file = os.path.join(log_dir, "cw-lessons-displayer.log")
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
         
         # 创建格式化器
@@ -290,7 +298,7 @@ class Plugin(PluginBase):
                 return
                 
             base_directory = self.app_contexts.get('Base_Directory', '.')
-            settings_path = os.path.join(base_directory, "plugins", "lessons_displayer", "config", "data.json")
+            settings_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "config", "data.json")
             
             logger.info(f"尝试加载自动化设置文件: {settings_path}")
             
@@ -336,9 +344,9 @@ class Plugin(PluginBase):
             base_directory = self.app_contexts.get('Base_Directory', '.')
 
             if is_dark:
-                ui_file_path = os.path.join(base_directory, "plugins", "lessons_displayer", "ui", "default_dark.ui")
+                ui_file_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "ui", "default_dark.ui")
             else:
-                ui_file_path = os.path.join(base_directory, "plugins", "lessons_displayer", "ui", "default_light.ui")
+                ui_file_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "ui", "default_light.ui")
             
             logger.info(f"尝试加载UI文件: {ui_file_path}")
             
@@ -1100,6 +1108,9 @@ class Plugin(PluginBase):
     def stop(self):
         """停止插件"""
         try:
+            # 停止鼠标检测
+            self.stop_mouse_detection()
+
             # 停止全局事件监听器
             if self.global_event_filter:
                 self.global_event_filter.stop_listening()
@@ -1537,7 +1548,7 @@ class Plugin(PluginBase):
             
             # 获取UI文件路径
             base_directory = self.app_contexts.get('Base_Directory', '.')
-            ui_file_path = os.path.join(base_directory, "plugins", "lessons_displayer", "ui", "tips.ui")
+            ui_file_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "ui", "tips.ui")
             
             logger.info(f"加载提示窗口UI文件: {ui_file_path}")
             
@@ -2195,7 +2206,7 @@ class Plugin(PluginBase):
             
             # 获取UI文件路径
             base_directory = self.app_contexts.get('Base_Directory', '.')
-            ui_file_path = os.path.join(base_directory, "plugins", "lessons_displayer", "ui", "blackboard.ui")
+            ui_file_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "ui", "blackboard.ui")
             
             logger.info(f"尝试加载熄屏模式UI文件: {ui_file_path}")
             
@@ -2257,6 +2268,9 @@ class Plugin(PluginBase):
             
             # 初始化进度条动画
             self.init_blackboard_progress_animation()
+    
+            # 初始化鼠标检测
+            self.init_mouse_detection()
             
             return True
             
@@ -2272,7 +2286,7 @@ class Plugin(PluginBase):
             
             # 获取UI文件路径
             base_directory = self.app_contexts.get('Base_Directory', '.')
-            ui_file_path = os.path.join(base_directory, "plugins", "lessons_displayer", "ui", "whiteboard.ui")
+            ui_file_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "ui", "whiteboard.ui")
             
             logger.info(f"尝试加载白板模式UI文件: {ui_file_path}")
             
@@ -2334,6 +2348,9 @@ class Plugin(PluginBase):
             
             # 初始化进度条动画
             self.init_whiteboard_progress_animation()
+
+            # 初始化鼠标检测
+            self.init_mouse_detection()
             
             return True
             
@@ -2759,12 +2776,18 @@ class Plugin(PluginBase):
         """关闭熄屏模式（带淡出动画）"""
         try:
             from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
-            
+        
             # 如果不在熄屏模式，直接返回
             if not self.is_blackboard_mode or not self.blackboard_widget:
                 return
                 
             logger.info("关闭熄屏模式")
+            
+            # 确保鼠标显示
+            self.show_mouse()
+            
+            # 停止鼠标检测计时器
+            self.stop_mouse_detection()
             
             # 创建淡出动画
             self.blackboard_animation = QPropertyAnimation(self.blackboard_widget, b"windowOpacity")
@@ -2788,7 +2811,10 @@ class Plugin(PluginBase):
             # 停止进度条动画
             if self.blackboard_progress_animation:
                 self.blackboard_progress_animation.stop()
-                
+                  
+            # 停止鼠标检测
+            self.stop_mouse_detection()
+
             # 关闭窗口
             if self.blackboard_widget:
                 self.blackboard_widget.close()
@@ -2872,12 +2898,18 @@ class Plugin(PluginBase):
         """关闭白板模式（带淡出动画）"""
         try:
             from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
-            
+        
             # 如果不在白板模式，直接返回
             if not self.is_whiteboard_mode or not self.whiteboard_widget:
                 return
                 
             logger.info("关闭白板模式")
+            
+            # 确保鼠标显示
+            self.show_mouse()
+            
+            # 停止鼠标检测计时器
+            self.stop_mouse_detection()
             
             # 创建淡出动画
             self.whiteboard_animation = QPropertyAnimation(self.whiteboard_widget, b"windowOpacity")
@@ -2902,6 +2934,9 @@ class Plugin(PluginBase):
             # 停止进度条动画
             if self.whiteboard_progress_animation:
                 self.whiteboard_progress_animation.stop()
+                
+            # 停止鼠标检测
+            self.stop_mouse_detection()
                 
             # 关闭窗口
             if self.whiteboard_widget:
@@ -3289,3 +3324,118 @@ class Plugin(PluginBase):
             
         except Exception as e:
             logger.error(f"白板模式进度条动画失败: {e}")
+
+    def init_mouse_detection(self):
+        """初始化鼠标检测"""
+        try:
+            # 重置鼠标状态
+            self.mouse_hidden = False
+            self.mouse_stationary_time = 0
+            self.last_mouse_position = None
+            
+            # 创建鼠标检测计时器
+            if not self.mouse_hide_timer:
+                self.mouse_hide_timer = QTimer()
+                self.mouse_hide_timer.timeout.connect(self.check_mouse_movement)
+            
+            # 启动鼠标检测
+            self.mouse_hide_timer.start(self.mouse_check_interval)
+            logger.info("鼠标检测已启动")
+            
+        except Exception as e:
+            logger.error(f"初始化鼠标检测失败: {e}")
+
+    def check_mouse_movement(self):
+        """检查鼠标移动状态"""
+        try:
+            # 只有在熄屏模式或白板模式下才检测鼠标
+            if not self.is_blackboard_mode and not self.is_whiteboard_mode:
+                return
+                
+            # 获取当前鼠标位置
+            current_pos = self.get_mouse_position()
+            
+            if current_pos:
+                # 如果是第一次获取位置，直接记录
+                if self.last_mouse_position is None:
+                    self.last_mouse_position = current_pos
+                    return
+                    
+                # 检查鼠标是否移动
+                if current_pos != self.last_mouse_position:
+                    # 鼠标移动了，重置静止时间并显示鼠标
+                    self.mouse_stationary_time = 0
+                    self.last_mouse_position = current_pos
+                    
+                    if self.mouse_hidden:
+                        self.show_mouse()
+                else:
+                    # 鼠标静止，增加静止时间
+                    self.mouse_stationary_time += self.mouse_check_interval / 1000.0
+                    
+                    # 如果静止时间超过阈值且鼠标未隐藏，则隐藏鼠标
+                    if self.mouse_stationary_time >= (self.mouse_hide_delay / 1000.0) and not self.mouse_hidden:
+                        self.hide_mouse()
+                        
+        except Exception as e:
+            logger.error(f"检查鼠标移动失败: {e}")
+
+    def hide_mouse(self):
+        """隐藏鼠标光标"""
+        try:
+            if not self.mouse_hidden:
+                # 只在熄屏模式或白板模式下隐藏鼠标
+                if self.is_blackboard_mode and self.blackboard_widget:
+                    self.blackboard_widget.setCursor(Qt.BlankCursor)
+                    self.mouse_hidden = True
+                    logger.debug("鼠标已隐藏（熄屏模式）")
+                elif self.is_whiteboard_mode and self.whiteboard_widget:
+                    self.whiteboard_widget.setCursor(Qt.BlankCursor)
+                    self.mouse_hidden = True
+                    logger.debug("鼠标已隐藏（白板模式）")
+                    
+        except Exception as e:
+            logger.error(f"隐藏鼠标失败: {e}")
+
+    def show_mouse(self):
+        """显示鼠标光标"""
+        try:
+            if self.mouse_hidden:
+                # 恢复默认鼠标光标
+                if self.is_blackboard_mode and self.blackboard_widget:
+                    self.blackboard_widget.unsetCursor()
+                    self.mouse_hidden = False
+                    logger.debug("鼠标已显示（熄屏模式）")
+                elif self.is_whiteboard_mode and self.whiteboard_widget:
+                    self.whiteboard_widget.unsetCursor()
+                    self.mouse_hidden = False
+                    logger.debug("鼠标已显示（白板模式）")
+                    
+        except Exception as e:
+            logger.error(f"显示鼠标失败: {e}")
+
+    def stop_mouse_detection(self):
+        """停止鼠标检测"""
+        try:
+            if self.mouse_hide_timer and self.mouse_hide_timer.isActive():
+                self.mouse_hide_timer.stop()
+                logger.info("鼠标检测已停止")
+                
+            # 重置鼠标状态
+            self.mouse_hidden = False
+            self.mouse_stationary_time = 0
+            self.last_mouse_position = None
+            
+        except Exception as e:
+            logger.error(f"停止鼠标检测失败: {e}")
+
+    def get_mouse_position(self):
+        """获取鼠标位置"""
+        try:
+            point = wintypes.POINT()
+            if ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+                return (point.x, point.y)
+            return None
+        except Exception as e:
+            logger.error(f"获取鼠标位置失败: {e}")
+            return None

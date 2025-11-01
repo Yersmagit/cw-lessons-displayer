@@ -1,16 +1,16 @@
 {
     "name": "显示今日课程",
-    "description": "显示今日课程",
-    "version": "1.0.0",
+    "description": "显示今日课程和熄屏模式~",
+    "version": "1.0.2",
     "plugin_ver": 1,
     "author": "Yersmagit",
     "settings": false,
     "display_name": "显示今日课程",
 
-    "url": "https://github.com/Yersmagit/cw-easi-control",
+    "url": "https://github.com/Yersmagit/cw-lessons-displayer",
     "branch": "main",
 
-    "update_date": "2025/04/06",
+    "update_date": "2025/11/01",
     
     "entry_point": "main:Plugin"
 }
