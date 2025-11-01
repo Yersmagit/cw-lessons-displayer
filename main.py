@@ -187,18 +187,18 @@ class Plugin(PluginBase):
         self.previous_highlight_id = None  # 之前高亮的课程ID
         self.current_state = None  # 当前状态
         
-        # 新增主题状态跟踪
+        # 主题状态跟踪
         try:
             self.current_theme_dark = isDarkTheme()  # 当前主题状态
         except:
             self.current_theme_dark = False  # 默认值
 
-        # 新增按钮引用
+        # 按钮引用
         self.pushButton_switch = None
         self.pushButton_light = None
         self.pushButton_dark = None
 
-        # 新增熄屏模式相关变量
+        # 熄屏模式相关变量
         self.blackboard_widget = None  # 熄屏模式UI部件
         self.blackboard_lesson_layout = None  # 熄屏模式课程布局
         self.blackboard_course_frames = {}  # 熄屏模式课程框架字典
@@ -207,7 +207,7 @@ class Plugin(PluginBase):
         self.blackboard_previous_highlight_id = None  # 熄屏模式之前高亮的课程ID
         self.blackboard_current_state = None  # 熄屏模式当前状态
 
-        # 新增白板模式相关变量
+        # 白板模式相关变量
         self.whiteboard_widget = None  # 白板模式UI部件
         self.whiteboard_lesson_layout = None  # 白板模式课程布局
         self.whiteboard_course_frames = {}  # 白板模式课程框架字典
@@ -216,13 +216,13 @@ class Plugin(PluginBase):
         self.whiteboard_previous_highlight_id = None  # 白板模式之前高亮的课程ID
         self.whiteboard_current_state = None  # 白板模式当前状态
 
-        # 新增进度条动画相关变量
+        # 进度条动画相关变量
         self.blackboard_progress_animation = None
         self.whiteboard_progress_animation = None
         self.current_blackboard_progress = 0
         self.current_whiteboard_progress = 0
         
-        # 新增自动化功能相关变量
+        # 自动化功能相关变量
         self.automation_settings = {}  # 存储自动化设置
         self.current_lesson_name = None  # 当前课程名称
         self.previous_lesson_name = None  # 上一次课程名称
@@ -236,24 +236,24 @@ class Plugin(PluginBase):
         # 事件过滤器
         self.global_event_filter = None
 
-        # 新增提示窗口动画相关变量
+        # 提示窗口动画相关变量
         self.tip_animation_group = None
         self.tip_close_animation_group = None
 
-        # 新增自动化相关变量
+        # 自动化相关变量
         self.current_automation_mode = None  # 当前自动化模式
         self.realtime_check_timer = None     # 实时监测计时器
 
-        # 新增主组件动画相关变量
+        # 主组件动画相关变量
         self.main_widget_animation = None  # 主组件动画
         self.is_main_widget_visible = False  # 主组件是否可见
         self.pending_width_update = False  # 是否有待处理的宽度更新
 
-        # 新增小组件列表状态跟踪
+        # 小组件列表状态跟踪
         self.has_valid_widgets = False  # 是否有有效的小组件列表
         self.initial_widget_check_done = False  # 初始小组件检查是否完成
 
-        # 新增鼠标隐藏相关变量
+        # 鼠标隐藏相关变量
         self.mouse_hidden = False  # 鼠标是否已隐藏
         self.mouse_stationary_time = 0  # 鼠标静止时间（秒）
         self.last_mouse_position = None  # 上次鼠标位置
