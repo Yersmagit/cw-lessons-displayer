@@ -24,11 +24,11 @@
 <img width="648" height="375" alt="7365d5f20debf762c1c7bc592f484bfc_0" src="https://github.com/user-attachments/assets/6ae70bbc-33dd-43a1-9dc5-4980fcc28aee" />
 
 ## 使用说明
-#### 初次打开
+### 初次打开
 1. 打开插件
 2. 尽情享用！
 
-#### 附加功能
+### 附加功能
 > [!TIP]
 > 这些功能更适合在投影仪设备上使用
 
