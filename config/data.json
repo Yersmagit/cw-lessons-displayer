@@ -1,4 +1,9 @@
 {
+    "tomorrow_course":{
+        "switch": "False",
+        "time_remaining": "60",
+        "start_time_limit": "18:00"
+    },
     "events":{
         "示例课程":{
             "click": "True",
