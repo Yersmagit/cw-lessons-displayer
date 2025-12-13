@@ -115,6 +115,12 @@
         </item>
         <item>
          <widget class="QLabel" name="countdown">
+          <property name="minimumSize">
+           <size>
+            <width>83</width>
+            <height>0</height>
+           </size>
+          </property>
           <property name="font">
            <font>
             <family>HarmonyOS Sans SC</family>
@@ -140,7 +146,7 @@ background: none;</string>
            <enum>Qt::PlainText</enum>
           </property>
           <property name="alignment">
-           <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+           <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
           </property>
          </widget>
         </item>

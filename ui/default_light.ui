@@ -160,6 +160,50 @@ border-radius: 17px;</string>
          </spacer>
         </item>
         <item>
+         <widget class="QLabel" name="tomorrow_course_text">
+          <property name="font">
+           <font>
+            <family>HarmonyOS Sans SC</family>
+            <pointsize>14</pointsize>
+            <weight>75</weight>
+            <italic>false</italic>
+            <bold>true</bold>
+           </font>
+          </property>
+          <property name="styleSheet">
+           <string notr="true">border: none;
+color: rgba(0, 0, 0, 90);
+font-weight: bold;
+background: none;</string>
+          </property>
+          <property name="text">
+           <string>明日课程</string>
+          </property>
+          <property name="textFormat">
+           <enum>Qt::PlainText</enum>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="horizontalSpacer_fixed_left_2">
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
+          </property>
+          <property name="sizeType">
+           <enum>QSizePolicy::Fixed</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>10</width>
+            <height>20</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
          <layout class="QHBoxLayout" name="horizontalLayout_lesson_list">
           <item>
            <widget class="QFrame" name="backgnd_2">

@@ -8,9 +8,12 @@ import os
 import json
 import time
 import logging
+import configparser
+from datetime import datetime, timedelta
 from typing import Dict, Any
-from PyQt5.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy, QPushButton
+from PyQt5.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy, QPushButton, QSpacerItem
 from PyQt5.QtCore import Qt, QObject, QTimer, pyqtSignal
+from PyQt5.QtGui import QPixmap
 from qfluentwidgets import isDarkTheme
 
 import ctypes
@@ -261,6 +264,13 @@ class Plugin(PluginBase):
         self.mouse_check_interval = 100  # 鼠标检查间隔（毫秒）
         self.mouse_hide_delay = 2000  # 鼠标隐藏延迟（毫秒）
         
+        # 明日课程相关变量
+        self.tomorrow_course_settings = {}  # 明日课程设置
+        self.showing_tomorrow_courses = False  # 是否正在显示明日课程
+        self.tomorrow_course_icon_label = None  # 明日课程图标标签
+        self.tomorrow_course_text_label = None  # 明日课程文本标签
+        self.tomorrow_course_spacer = None  # 明日课程间隔
+        
         logger.info("今日课程 插件初始化完成")
     
     def setup_logging(self, log_dir):
@@ -280,8 +290,8 @@ class Plugin(PluginBase):
         file_handler.setFormatter(formatter)
         
         # 设置日志级别
-        logger.setLevel(logging.WARNING)
-        file_handler.setLevel(logging.WARNING)
+        logger.setLevel(logging.DEBUG)
+        file_handler.setLevel(logging.DEBUG)
         
         # 添加处理器
         logger.addHandler(file_handler)
@@ -306,20 +316,26 @@ class Plugin(PluginBase):
                 with open(settings_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.automation_settings = data.get('events', {})
+                    self.tomorrow_course_settings = data.get('tomorrow_course', {})
                 
                 # 详细日志记录加载的设置
                 logger.info(f"成功加载自动化设置，共 {len(self.automation_settings)} 个课程设置")
                 for course_name, settings in self.automation_settings.items():
                     logger.info(f"课程 '{course_name}': time={settings.get('time')}, "
                             f"click={settings.get('click')}, mode={settings.get('mode')}")
+                
+                # 记录明日课程设置
+                logger.info(f"明日课程设置: {self.tomorrow_course_settings}")
             else:
                 logger.warning(f"自动化设置文件不存在: {settings_path}")
                 self.automation_settings = {}
+                self.tomorrow_course_settings = {}
                 logger.info("使用空的自动化设置")
                 
         except Exception as e:
             logger.error(f"加载自动化设置失败: {e}")
             self.automation_settings = {}
+            self.tomorrow_course_settings = {}
 
     def init_ui(self, theme_changed=False):
         """初始化UI"""
@@ -365,6 +381,9 @@ class Plugin(PluginBase):
                 self.pushButton_switch = None
                 self.pushButton_light = None
                 self.pushButton_dark = None
+                self.tomorrow_course_icon_label = None
+                self.tomorrow_course_text_label = None
+                self.tomorrow_course_spacer = None
                 
             # 加载UI文件
             self.ui_widget = uic.loadUi(ui_file_path)
@@ -403,18 +422,29 @@ class Plugin(PluginBase):
             self.pushButton_light = self.ui_widget.findChild(QPushButton, "pushButton_light")
             self.pushButton_dark = self.ui_widget.findChild(QPushButton, "pushButton_dark")
             
+            # 获取明日课程相关控件
+            self.tomorrow_course_text_label = self.ui_widget.findChild(QLabel, "tomorrow_course_text")
+            horizontal_spacer_fixed_left_2 = self.ui_widget.findChild(QObject, "horizontalSpacer_fixed_left_2")
+            
             # 设置按钮事件
             self.setup_button_events()
             
             # 设置按钮悬停样式
             self.setup_button_styles()
-                
+            
             # 初始设置
             self.ui_widget.setFixedHeight(74)
             self.ui_initialized = True
             
             # 重置主组件可见状态
             self.is_main_widget_visible = False
+            
+            # 初始隐藏明日课程相关控件
+            if self.tomorrow_course_text_label:
+                self.tomorrow_course_text_label.setVisible(False)
+            if horizontal_spacer_fixed_left_2:
+                horizontal_spacer_fixed_left_2.setVisible(False)
+                
             logger.info("UI初始化成功，主组件状态重置为不可见")
             
         except Exception as e:
@@ -474,7 +504,7 @@ class Plugin(PluginBase):
                 # 有课程数据，直接淡入
                 self.fade_in_main_widget()
             else:
-                # 没有课程数据，等待widget变化检测
+                # 没有课程数据，等待widget变化检测触发淡入
                 logger.info("暂无课程数据，等待widget变化检测触发淡入")
                 
         except Exception as e:
@@ -619,7 +649,7 @@ class Plugin(PluginBase):
                     node_activities.append((key, int(duration)))
             
             if not node_activities:
-                ## logger.warning(f"未找到节点 {node_index} 的活动数据")
+                logger.debug(f"未找到节点 {node_index} 的活动数据")
                 return None
             
             # 按照正确的顺序排序：先按第三个字符（活动序号）排序，再按第一个字符（活动类型）排序
@@ -644,13 +674,9 @@ class Plugin(PluginBase):
             for activity_id, duration in node_activities:
                 activity_start_times[activity_id] = current_time_accumulated.time()
                 current_time_accumulated += timedelta(minutes=duration)
-                ### logger.debug(f"活动 {activity_id}: {activity_start_times[activity_id]} - {current_time_accumulated.time()} ({duration}分钟)")
             
             # 节点结束时间
             node_end_time = current_time_accumulated.time()
-            
-            ### logger.debug(f"节点 {node_index} 的活动排序: {[item[0] for item in node_activities]}")
-            ### logger.debug(f"节点开始时间: {node_start_time}, 节点结束时间: {node_end_time}, 当前时间: {current_time}")
             
             # 确定当前活动
             current_activity_id = None
@@ -662,10 +688,9 @@ class Plugin(PluginBase):
                     if activity_id.startswith('a'):
                         current_activity_id = activity_id
                         break
-            # 如果当前时间超过节点结束时间，选择下一个节点的第一个课程
+            # 如果当前时间超过节点结束时间，返回None
             elif current_time >= node_end_time:
-                # 这里简化处理，实际可能需要获取下一个节点的数据
-                ## logger.debug("当前时间超过节点结束时间")
+                logger.debug("当前时间超过节点结束时间")
                 return None
             else:
                 # 在当前时间范围内，找到当前活动
@@ -694,7 +719,6 @@ class Plugin(PluginBase):
                             current_activity_id = activity_id
                             break
             
-            ### logger.debug(f"计算出的当前课程ID: {current_activity_id}, 状态: {state}")
             return current_activity_id
             
         except Exception as e:
@@ -959,7 +983,7 @@ class Plugin(PluginBase):
                     
                     # 课程之间添加6px间隔（最后一个课程后不添加）
                     if j < len(lessons) - 1:
-                        spacer = self.create_spacer(6)
+                        spacer = self.create_spacer(6)  # 今日课程使用6px间隔
                         if spacer:
                             self.lesson_layout.addItem(spacer)
                 
@@ -995,6 +1019,11 @@ class Plugin(PluginBase):
             # 如果当前课程和状态都没有变化，直接返回
             if (current_course_id == self.current_course_id and 
                 current_state == self.current_state):
+                return
+                
+            # 如果当前课程ID为None，清除所有高亮
+            if current_course_id is None:
+                self.clear_main_ui_highlight()
                 return
                 
             # 移除之前的高亮
@@ -1036,6 +1065,34 @@ class Plugin(PluginBase):
             
         except Exception as e:
             logger.error(f"更新课程高亮失败: {e}")
+            # 出错时清除高亮
+            self.clear_main_ui_highlight()
+
+    def clear_main_ui_highlight(self):
+        """清除主UI的高亮显示"""
+        try:
+            if not self.course_frames:
+                return
+                
+            # 移除所有高亮
+            for course_id, frame in self.course_frames.items():
+                frame.setStyleSheet("border-radius: 20px; background-color: none")
+                label = frame.findChild(QLabel)
+                if label:
+                    if self.current_theme_dark:
+                        label.setStyleSheet("border: none; color: rgb(255, 255, 255); font-weight: bold; background: none;")
+                    else:
+                        label.setStyleSheet("border: none; color: rgb(0, 0, 0); font-weight: bold; background: none;")
+            
+            # 重置状态
+            self.previous_highlight_id = None
+            self.current_course_id = None
+            self.current_state = None
+            
+            logger.debug("已清除主UI高亮显示")
+            
+        except Exception as e:
+            logger.error(f"清除主UI高亮失败: {e}")
         
     def print_all_children(self, widget, level=0):
         """打印所有子组件信息（用于调试）"""
@@ -1229,25 +1286,33 @@ class Plugin(PluginBase):
                 else:
                     logger.info("UI重新初始化后没有有效小组件，保持隐藏")
         
-        # 检查课程数据是否变化
-        current_lessons = self.app_contexts.get('Current_Lessons', {})
-        if current_lessons != self.previous_lessons:
-            logger.debug("检测到课程数据变化，重新绘制UI")
-            self.previous_lessons = current_lessons.copy()
-            self.display_lessons()
-            # 如果处于熄屏模式，也更新熄屏模式课程
-            if self.is_blackboard_mode:
-                self.display_blackboard_lessons()
-            # 如果处于白板模式，也更新白板模式课程
-            if self.is_whiteboard_mode:
-                self.display_whiteboard_lessons()
+        # 检查是否应该显示明日课程
+        should_show_tomorrow = self.should_show_tomorrow_course()
+        
+        if should_show_tomorrow and not self.showing_tomorrow_courses:
+            # 切换到显示明日课程
+            logger.info("切换到显示明日课程")
+            self.show_tomorrow_courses()
+        elif not should_show_tomorrow and self.showing_tomorrow_courses:
+            # 切换回显示今日课程
+            logger.info("切换回显示今日课程")
+            self.show_today_courses()
+        
+        # 检查课程数据是否变化（只在显示今日课程时）
+        if not self.showing_tomorrow_courses:
+            current_lessons = self.app_contexts.get('Current_Lessons', {})
+            if current_lessons != self.previous_lessons:
+                logger.debug("检测到课程数据变化，重新绘制UI")
+                self.previous_lessons = current_lessons.copy()
+                self.display_lessons()
         
         # 检查widget列表是否变化，只有变化时才更新
         if self.has_widgets_changed():
             logger.debug("检测到widget列表变化，已触发相应处理")
         
-        # 更新当前课程高亮
-        self.update_current_course_highlight()
+        # 更新当前课程高亮 - 这里会自动处理错误情况（只在显示今日课程时）
+        if not self.showing_tomorrow_courses:
+            self.update_current_course_highlight()
         
         # 更新熄屏模式当前课程高亮
         self.update_blackboard_current_course_highlight()
@@ -1302,7 +1367,417 @@ class Plugin(PluginBase):
             logger.error(f"检查初始小组件状态失败: {e}")
             self.has_valid_widgets = False
             self.initial_widget_check_done = True
+
+    def should_show_tomorrow_course(self):
+        """判断是否应该显示明日课程"""
+        try:
+            # 检查开关设置
+            if self.tomorrow_course_settings.get('switch', 'False') != 'True':
+                logger.debug("明日课程功能未启用")
+                return False
             
+            # 获取当前时间
+            current_time_str = self.app_contexts.get('Current_Time', '00:00:00')
+            current_time = datetime.strptime(current_time_str, '%H:%M:%S').time()
+            
+            # 获取起始时间限制
+            start_time_limit_str = self.tomorrow_course_settings.get('start_time_limit', '20:00')
+            start_time_limit = datetime.strptime(start_time_limit_str, '%H:%M').time()
+            
+            # 检查当前时间是否晚于起始时间限制
+            if current_time < start_time_limit:
+                logger.debug(f"当前时间 {current_time_str} 早于起始时间限制 {start_time_limit_str}")
+                return False
+            
+            # 计算今日课程结束时间
+            today_end_time = self.calculate_today_course_end_time()
+            if not today_end_time:
+                logger.debug("无法计算今日课程结束时间")
+                return False
+            
+            # 计算距离今日课程结束的剩余时间（分钟）
+            current_datetime = datetime.combine(datetime.today(), current_time)
+            today_end_datetime = datetime.combine(datetime.today(), today_end_time)
+            
+            if current_datetime >= today_end_datetime:
+                # 当前时间已经超过今日课程结束时间
+                time_remaining = 0
+            else:
+                time_remaining = (today_end_datetime - current_datetime).total_seconds() / 60
+            
+            # 获取设定的剩余时间阈值
+            time_remaining_threshold = int(self.tomorrow_course_settings.get('time_remaining', '50'))
+            
+            logger.debug(f"距离今日课程结束剩余时间: {time_remaining:.1f} 分钟, 阈值: {time_remaining_threshold} 分钟")
+            
+            # 检查是否满足剩余时间条件
+            if time_remaining > time_remaining_threshold:
+                logger.debug("剩余时间未达到阈值，不显示明日课程")
+                return False
+            
+            logger.info(f"满足明日课程显示条件: 剩余时间 {time_remaining:.1f} 分钟 <= 阈值 {time_remaining_threshold} 分钟")
+            return True
+            
+        except Exception as e:
+            logger.error(f"判断是否显示明日课程失败: {e}")
+            return False
+
+    def calculate_today_course_end_time(self):
+        """计算今日课程结束时间"""
+        try:
+            # 获取时间线数据
+            timeline_data = self.app_contexts.get('Timeline_Data', {})
+            if not timeline_data:
+                logger.warning("未获取到时间线数据")
+                return None
+            
+            # 获取节点开始时间
+            parts_start_time = self.app_contexts.get('Parts_Start_Time', [])
+            if not parts_start_time:
+                logger.warning("未获取到节点开始时间")
+                return None
+            
+            # 找到最后一个节点
+            last_part_index = len(parts_start_time) - 1
+            last_part_start_time = parts_start_time[last_part_index]
+            
+            # 获取最后一个节点的所有活动
+            last_part_activities = []
+            for key, duration in timeline_data.items():
+                if len(key) >= 2 and key[1] == str(last_part_index):
+                    last_part_activities.append((key, int(duration)))
+            
+            if not last_part_activities:
+                logger.warning(f"未找到最后一个节点 {last_part_index} 的活动数据")
+                return None
+            
+            # 按照正确的顺序排序
+            def activity_sort_key(item):
+                activity_id = item[0]
+                activity_number = activity_id[2] if len(activity_id) >= 3 else '0'
+                activity_type = activity_id[0]
+                return (int(activity_number) if activity_number.isdigit() else 0, activity_type)
+            
+            last_part_activities.sort(key=activity_sort_key)
+            
+            # 计算最后一个节点的结束时间
+            current_time = last_part_start_time
+            for activity_id, duration in last_part_activities:
+                current_time += timedelta(minutes=duration)
+            
+            # 返回结束时间（只保留时间部分）
+            return current_time.time()
+            
+        except Exception as e:
+            logger.error(f"计算今日课程结束时间失败: {e}")
+            return None
+
+    def calculate_tomorrow_weekday(self):
+        """计算明天的周次（0-6，0为周一，6为周日）"""
+        try:
+            current_weekday = self.app_contexts.get('Current_Week', 0)
+            tomorrow_weekday = (current_weekday + 1) % 7
+            logger.debug(f"当前周次: {current_weekday}, 明天周次: {tomorrow_weekday}")
+            return tomorrow_weekday
+        except Exception as e:
+            logger.error(f"计算明天周次失败: {e}")
+            return 0
+
+    def calculate_tomorrow_parity(self):
+        """计算明天是单周还是双周"""
+        try:
+            # 获取学期起始日期
+            base_directory = self.app_contexts.get('Base_Directory', '.')
+            config_path = os.path.join(base_directory, "config.ini")
+            
+            if not os.path.exists(config_path):
+                logger.warning(f"config.ini文件不存在: {config_path}")
+                return 'odd'  # 默认单周
+            
+            config = configparser.ConfigParser()
+            config.read(config_path, encoding='utf-8')
+            
+            start_date_str = config.get('Date', 'start_date', fallback='2025-9-1')
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            
+            # 计算明天的日期
+            tomorrow_date = datetime.today().date() + timedelta(days=1)
+            
+            # 计算相差的天数
+            days_diff = (tomorrow_date - start_date).days
+            
+            # 计算周数（从0开始）
+            week_number = days_diff // 7
+            
+            # 判断单双周：奇数周为双周，偶数周为单周
+            parity = 'even' if week_number % 2 == 1 else 'odd'
+            
+            logger.debug(f"明天日期: {tomorrow_date}, 起始日期: {start_date}, 相差天数: {days_diff}, 周数: {week_number}, 单双周: {parity}")
+            
+            return parity
+            
+        except Exception as e:
+            logger.error(f"计算明天单双周失败: {e}")
+            return 'odd'  # 默认单周
+
+    def get_tomorrow_courses(self):
+        """获取明日课程数据"""
+        try:
+            # 获取明天的周次和单双周
+            tomorrow_weekday = self.calculate_tomorrow_weekday()
+            tomorrow_parity = self.calculate_tomorrow_parity()
+            
+            # 获取课程数据
+            loaded_data = self.app_contexts.get('Loaded_Data', {})
+            if not loaded_data:
+                logger.warning("未获取到课程数据")
+                return {}
+            
+            # 获取课程表
+            schedule_key = 'schedule_even' if tomorrow_parity == 'even' else 'schedule'
+            schedule = loaded_data.get(schedule_key, {})
+            
+            # 获取对应周次的课程列表
+            tomorrow_courses_list = schedule.get(str(tomorrow_weekday), [])
+            if not tomorrow_courses_list:
+                logger.warning(f"未找到周次 {tomorrow_weekday} 的课程数据")
+                return {}
+            
+            # 获取时间线数据
+            timeline = loaded_data.get('timeline', {})
+            tomorrow_timeline = timeline.get(str(tomorrow_weekday), {})
+            if not tomorrow_timeline:
+                # 使用默认时间线
+                tomorrow_timeline = timeline.get('default', {})
+            
+            # 提取课程活动（以'a'开头的键）
+            course_activities = []
+            for key in sorted(tomorrow_timeline.keys()):
+                if key.startswith('a'):
+                    course_activities.append(key)
+            
+            # 计算每个节点的课程数量
+            node_course_counts = {}
+            for activity in course_activities:
+                if len(activity) >= 2:
+                    node = activity[1]
+                    node_course_counts[node] = node_course_counts.get(node, 0) + 1
+            
+            # 构建课程字典
+            tomorrow_courses = {}
+            course_index = 0
+            
+            for node in sorted(node_course_counts.keys()):
+                node_course_count = node_course_counts[node]
+                for i in range(node_course_count):
+                    if course_index < len(tomorrow_courses_list):
+                        course_name = tomorrow_courses_list[course_index]
+                        # 生成课程ID（格式：a{节点序号}{课程序号}）
+                        course_id = f"a{node}{i+1:02d}" if i+1 < 10 else f"a{node}{i+1}"
+                        tomorrow_courses[course_id] = course_name
+                        course_index += 1
+                    else:
+                        # 课程列表不足，用"暂无课程"补全
+                        course_id = f"a{node}{i+1:02d}" if i+1 < 10 else f"a{node}{i+1}"
+                        tomorrow_courses[course_id] = "暂无课程"
+            
+            logger.info(f"获取到明日课程: {tomorrow_courses}")
+            return tomorrow_courses
+            
+        except Exception as e:
+            logger.error(f"获取明日课程失败: {e}")
+            return {}
+
+    def show_tomorrow_courses(self):
+        """显示明日课程"""
+        try:
+            if not self.ui_initialized or not self.ui_widget:
+                logger.error("UI未初始化，无法显示明日课程")
+                return
+            
+            # 获取明日课程数据
+            tomorrow_courses = self.get_tomorrow_courses()
+            if not tomorrow_courses:
+                logger.warning("未获取到明日课程数据")
+                return
+            
+            # 显示明日课程相关控件
+            if self.tomorrow_course_text_label:
+                self.tomorrow_course_text_label.setVisible(True)
+            
+            horizontal_spacer_fixed_left_2 = self.ui_widget.findChild(QObject, "horizontalSpacer_fixed_left_2")
+            if horizontal_spacer_fixed_left_2:
+                horizontal_spacer_fixed_left_2.setVisible(True)
+            
+            # 添加明日课程图标
+            self.add_tomorrow_course_icon()
+            
+            # 清空现有课程布局
+            self.clear_lesson_layout()
+            
+            # 按时间段分组明日课程
+            lesson_groups = self.group_lessons_by_period(tomorrow_courses)
+            logger.info(f"分组后的明日课程: {lesson_groups}")
+            
+            # 动态创建明日课程显示
+            group_count = len(lesson_groups)
+            for i, (period, lessons) in enumerate(lesson_groups.items()):
+                # 获取这个时间段的所有课程ID
+                period_course_ids = [key for key in tomorrow_courses.keys() if key[1] == period]
+                
+                # 添加本组的课程
+                for j, (course_id, abbreviation) in enumerate(zip(period_course_ids, lessons)):
+                    frame = self.create_lesson_frame(abbreviation, course_id)
+                    if frame:
+                        self.lesson_layout.addWidget(frame)
+                        # 存储课程框架引用（但不用于高亮）
+                        self.course_frames[course_id] = frame
+                        logger.debug(f"添加明日课程框架: {abbreviation} (ID: {course_id})")
+                    
+                    # 课程之间添加2px间隔（最后一个课程后不添加）- 明日课程使用2px间隔
+                    if j < len(lessons) - 1:
+                        spacer = self.create_spacer(0)  # 明日课程使用2px间隔
+                        if spacer:
+                            self.lesson_layout.addItem(spacer)
+                
+                # 组之间添加分隔线（最后一组后不添加）
+                if i < group_count - 1:
+                    # 添加10px间隔
+                    spacer_before = self.create_spacer(5)
+                    if spacer_before:
+                        self.lesson_layout.addItem(spacer_before)
+                    
+                    # 添加分隔线
+                    divider = self.create_divider()
+                    if divider:
+                        self.lesson_layout.addWidget(divider)
+                    
+                    # 添加10px间隔
+                    spacer_after = self.create_spacer(5)
+                    if spacer_after:
+                        self.lesson_layout.addItem(spacer_after)
+            
+            # 更新状态
+            self.showing_tomorrow_courses = True
+            logger.info("明日课程显示完成")
+            
+        except Exception as e:
+            logger.error(f"显示明日课程失败: {e}")
+
+    def show_today_courses(self):
+        """显示今日课程"""
+        try:
+            if not self.ui_initialized or not self.ui_widget:
+                logger.error("UI未初始化，无法显示今日课程")
+                return
+            
+            # 隐藏明日课程相关控件
+            if self.tomorrow_course_text_label:
+                self.tomorrow_course_text_label.setVisible(False)
+            
+            horizontal_spacer_fixed_left_2 = self.ui_widget.findChild(QObject, "horizontalSpacer_fixed_left_2")
+            if horizontal_spacer_fixed_left_2:
+                horizontal_spacer_fixed_left_2.setVisible(False)
+            
+            # 移除明日课程图标
+            self.remove_tomorrow_course_icon()
+            
+            # 重新显示今日课程
+            self.display_lessons()
+            
+            # 更新状态
+            self.showing_tomorrow_courses = False
+            logger.info("切换回显示今日课程")
+            
+        except Exception as e:
+            logger.error(f"显示今日课程失败: {e}")
+
+    def add_tomorrow_course_icon(self):
+        """添加明日课程图标"""
+        try:
+            # 如果已经存在图标，先移除
+            self.remove_tomorrow_course_icon()
+            
+            # 获取图标路径
+            base_directory = self.app_contexts.get('Base_Directory', '.')
+            if self.current_theme_dark:
+                icon_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "ui", "img", "dark", "next.svg")
+            else:
+                icon_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "ui", "img", "next.svg")
+            
+            if not os.path.exists(icon_path):
+                logger.warning(f"明日课程图标不存在: {icon_path}")
+                return
+            
+            # 创建图标标签
+            self.tomorrow_course_icon_label = QLabel()
+            self.tomorrow_course_icon_label.setFixedSize(24, 24)
+            pixmap = QPixmap(icon_path)
+            self.tomorrow_course_icon_label.setPixmap(pixmap)
+            self.tomorrow_course_icon_label.setScaledContents(True)
+            
+            # 获取水平布局
+            horizontal_layout = self.ui_widget.findChild(QHBoxLayout, "horizontalLayout")
+            if not horizontal_layout:
+                logger.error("未找到水平布局")
+                return
+            
+            # 找到明日课程文本标签的位置
+            tomorrow_course_text_index = -1
+            for i in range(horizontal_layout.count()):
+                item = horizontal_layout.itemAt(i)
+                if item.widget() == self.tomorrow_course_text_label:
+                    tomorrow_course_text_index = i
+                    break
+            
+            if tomorrow_course_text_index == -1:
+                logger.error("未找到明日课程文本标签")
+                return
+            
+            # 在文本标签前插入图标
+            horizontal_layout.insertWidget(tomorrow_course_text_index, self.tomorrow_course_icon_label)
+            
+            # 添加8px间隔（在图标和文本标签之间）
+            spacer_8px = self.create_spacer(6)
+            if spacer_8px:
+                horizontal_layout.insertItem(tomorrow_course_text_index + 1, spacer_8px)
+                # 保存间隔引用以便后续移除
+                self.tomorrow_course_spacer = spacer_8px
+            
+            logger.debug("明日课程图标和间隔添加完成")
+            
+        except Exception as e:
+            logger.error(f"添加明日课程图标失败: {e}")
+
+    def remove_tomorrow_course_icon(self):
+        """移除明日课程图标和间隔"""
+        try:
+            # 获取水平布局
+            horizontal_layout = self.ui_widget.findChild(QHBoxLayout, "horizontalLayout")
+            if not horizontal_layout:
+                return
+            
+            # 移除图标
+            if self.tomorrow_course_icon_label:
+                horizontal_layout.removeWidget(self.tomorrow_course_icon_label)
+                self.tomorrow_course_icon_label.deleteLater()
+                self.tomorrow_course_icon_label = None
+            
+            # 移除间隔
+            if self.tomorrow_course_spacer:
+                # 找到间隔的位置并移除
+                for i in range(horizontal_layout.count()):
+                    item = horizontal_layout.itemAt(i)
+                    if item == self.tomorrow_course_spacer:
+                        horizontal_layout.removeItem(item)
+                        break
+                self.tomorrow_course_spacer = None
+            
+            logger.debug("明日课程图标和间隔已移除")
+            
+        except Exception as e:
+            logger.error(f"移除明日课程图标失败: {e}")
+
     def handle_automation(self):
         """处理自动化模式切换"""
         try:
@@ -3087,13 +3562,22 @@ class Plugin(PluginBase):
                 if hasattr(countdown_progress, 'setVal'):
                     # 使用动画设置进度条为0
                     self.animate_blackboard_progress(0)
+                # 移除高亮显示
+                self.clear_blackboard_highlight()
                 logger.debug("没有活动数据，显示默认倒计时")
                 return
                 
             total_seconds, remaining_seconds, activity_id, state = time_info
             
-            # 即使total_seconds为None，我们也有剩余时间信息，所以继续处理
-            logger.debug(f"获取到时间信息: total_seconds={total_seconds}, remaining_seconds={remaining_seconds}, activity_id={activity_id}, state={state}")
+            # 检查remaining_seconds是否为None，如果是则显示默认值
+            if remaining_seconds is None:
+                countdown_label.setText("< - 分钟")
+                if hasattr(countdown_progress, 'setVal'):
+                    self.animate_blackboard_progress(0)
+                # 移除高亮显示
+                self.clear_blackboard_highlight()
+                logger.debug("剩余时间为None，显示默认倒计时")
+                return
             
             # 更新倒计时文本
             if remaining_seconds >= 60:
@@ -3139,6 +3623,64 @@ class Plugin(PluginBase):
             
         except Exception as e:
             logger.error(f"更新熄屏模式倒计时失败: {e}")
+            # 出错时也显示默认值
+            try:
+                countdown_label = self.blackboard_widget.findChild(QLabel, "countdown")
+                countdown_progress = self.blackboard_widget.findChild(QObject, "countdown_progressBar")
+                if countdown_label:
+                    countdown_label.setText("< - 分钟")
+                if countdown_progress and hasattr(countdown_progress, 'setVal'):
+                    self.animate_blackboard_progress(0)
+                # 移除高亮显示
+                self.clear_blackboard_highlight()
+            except:
+                pass
+
+    def clear_blackboard_highlight(self):
+        """清除熄屏模式的高亮显示"""
+        try:
+            if not self.is_blackboard_mode or not self.blackboard_course_frames:
+                return
+                
+            # 移除所有高亮
+            for course_id, frame in self.blackboard_course_frames.items():
+                frame.setStyleSheet("border-radius: 20px; background-color: none")
+                label = frame.findChild(QLabel)
+                if label:
+                    label.setStyleSheet("border: none; color: rgb(255, 255, 255); font-weight: bold; background: none;")
+            
+            # 重置状态
+            self.blackboard_previous_highlight_id = None
+            self.blackboard_current_course_id = None
+            self.blackboard_current_state = None
+            
+            logger.debug("已清除熄屏模式高亮显示")
+            
+        except Exception as e:
+            logger.error(f"清除熄屏模式高亮失败: {e}")
+
+    def clear_whiteboard_highlight(self):
+        """清除白板模式的高亮显示"""
+        try:
+            if not self.is_whiteboard_mode or not self.whiteboard_course_frames:
+                return
+                
+            # 移除所有高亮
+            for course_id, frame in self.whiteboard_course_frames.items():
+                frame.setStyleSheet("border-radius: 20px; background-color: none")
+                label = frame.findChild(QLabel)
+                if label:
+                    label.setStyleSheet("border: none; color: rgb(0, 0, 0); font-weight: bold; background: none;")
+            
+            # 重置状态
+            self.whiteboard_previous_highlight_id = None
+            self.whiteboard_current_course_id = None
+            self.whiteboard_current_state = None
+            
+            logger.debug("已清除白板模式高亮显示")
+            
+        except Exception as e:
+            logger.error(f"清除白板模式高亮失败: {e}")
 
     def update_whiteboard_countdown(self):
         """更新白板模式倒计时显示（带动画）"""
@@ -3148,7 +3690,7 @@ class Plugin(PluginBase):
                 
             # 获取倒计时标签和进度条
             countdown_label = self.whiteboard_widget.findChild(QLabel, "countdown")
-            countdown_progress = self.whiteboard_widget.findChild(QObject, "countdown_progressBar")  # 注意：ProgressRing是自定义控件
+            countdown_progress = self.whiteboard_widget.findChild(QObject, "countdown_progressBar")
             
             if not countdown_label or not countdown_progress:
                 logger.warning("未找到白板模式倒计时控件")
@@ -3164,13 +3706,22 @@ class Plugin(PluginBase):
                 if hasattr(countdown_progress, 'setVal'):
                     # 使用动画设置进度条为0
                     self.animate_whiteboard_progress(0)
+                # 移除高亮显示
+                self.clear_whiteboard_highlight()
                 logger.debug("没有活动数据，显示默认倒计时")
                 return
                 
             total_seconds, remaining_seconds, activity_id, state = time_info
             
-            # 即使total_seconds为None，我们也有剩余时间信息，所以继续处理
-            logger.debug(f"获取到时间信息: total_seconds={total_seconds}, remaining_seconds={remaining_seconds}, activity_id={activity_id}, state={state}")
+            # 检查remaining_seconds是否为None，如果是则显示默认值
+            if remaining_seconds is None:
+                countdown_label.setText("< - 分钟")
+                if hasattr(countdown_progress, 'setVal'):
+                    self.animate_whiteboard_progress(0)
+                # 移除高亮显示
+                self.clear_whiteboard_highlight()
+                logger.debug("剩余时间为None，显示默认倒计时")
+                return
             
             # 更新倒计时文本
             if remaining_seconds >= 60:
@@ -3216,6 +3767,18 @@ class Plugin(PluginBase):
             
         except Exception as e:
             logger.error(f"更新白板模式倒计时失败: {e}")
+            # 出错时也显示默认值
+            try:
+                countdown_label = self.whiteboard_widget.findChild(QLabel, "countdown")
+                countdown_progress = self.whiteboard_widget.findChild(QObject, "countdown_progressBar")
+                if countdown_label:
+                    countdown_label.setText("< - 分钟")
+                if countdown_progress and hasattr(countdown_progress, 'setVal'):
+                    self.animate_whiteboard_progress(0)
+                # 移除高亮显示
+                self.clear_whiteboard_highlight()
+            except:
+                pass
 
     def switch_to_blackboard_from_whiteboard(self):
         """从白板模式切换到熄屏模式"""
