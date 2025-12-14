@@ -30,6 +30,7 @@
 
 ### 其它功能
 - **在快要放学的时候显示明天的课程**
+
   - **在 `./config/` 目录下打开 `data.json` ，在其中找到键 `"tomorrow_course"`，可以编辑显示明天课程的相关设置。**
   
     以下是示例的配置：
@@ -46,6 +47,9 @@
   - `"time_remaining"` 和 `"start_time_limit"` 用于设置显示明日课程的触发条件。
     - `"time_remaining"` 的单位是分钟，`"start_time_limit"` 是一个 24 小时制时间。
     - 仅当 **距离今天放学的时间** 少于 `"time_remaining"` 的值，且 **当前时间** 晚于 `"start_time_limit"` 的值时，才显示明日课程。
+   
+效果图：
+<img width="648" height="53.4" alt="QQ_1765681115879" src="https://github.com/user-attachments/assets/35f12d52-3d50-4c09-9755-41fea96fbdf6" />
 
 > [!IMPORTANT]
 > 此功能适合专业人士，不当操作可能导致软件崩溃
