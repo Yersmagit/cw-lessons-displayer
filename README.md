@@ -12,16 +12,16 @@
 
 ## 效果
 #### 浅色模式
-<img width="648" height="375" alt="ed7aed86e4edb13547ea6a708b4bf76b" src="https://github.com/user-attachments/assets/6741f788-51a5-4106-8765-81c78002219f" />
+<img width="648" height="375" alt="浅色模式" src="https://github.com/user-attachments/assets/6741f788-51a5-4106-8765-81c78002219f" />
 
 #### 深色模式
-<img width="648" height="375" alt="3507039ef9b7115de1eaa6f97506599b_0" src="https://github.com/user-attachments/assets/6c39138b-39c4-4a6e-ae31-42bbe7054b92" />
+<img width="648" height="375" alt="深色模式" src="https://github.com/user-attachments/assets/6c39138b-39c4-4a6e-ae31-42bbe7054b92" />
 
 #### 熄屏模式
-<img width="648" height="375" alt="42707a4d41ed98dac111384386cb1a68" src="https://github.com/user-attachments/assets/11c1bd63-7023-4d6a-8bab-bf5d98dac548" />
+<img width="648" height="375" alt="熄屏模式" src="https://github.com/user-attachments/assets/11c1bd63-7023-4d6a-8bab-bf5d98dac548" />
 
 #### 白板模式
-<img width="648" height="375" alt="7365d5f20debf762c1c7bc592f484bfc_0" src="https://github.com/user-attachments/assets/6ae70bbc-33dd-43a1-9dc5-4980fcc28aee" />
+<img width="648" height="375" alt="白板模式" src="https://github.com/user-attachments/assets/6ae70bbc-33dd-43a1-9dc5-4980fcc28aee" />
 
 ## 使用说明
 ### 初次打开
@@ -49,7 +49,9 @@
     - 仅当 **距离今天放学的时间** 少于 `"time_remaining"` 的值，且 **当前时间** 晚于 `"start_time_limit"` 的值时，才显示明日课程。
  
 效果图：
-<img width="648" height="53.4" alt="QQ_1765681115879" src="https://github.com/user-attachments/assets/35f12d52-3d50-4c09-9755-41fea96fbdf6" />
+
+<img width="1214" height="100" alt="明日课程" src="https://github.com/user-attachments/assets/ee3dc0b1-9ff4-4656-bf09-929f6072aa55" />
+
 
 
 > [!IMPORTANT]
