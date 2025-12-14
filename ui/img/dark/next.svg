@@ -6,7 +6,8 @@
         fill: #fff;
         stroke: #fff;
         stroke-miterlimit: 10;
-        stroke-width: .5px;
+        stroke-width: .7px;
+        opacity: 0.67;
       }
     </style>
   </defs>
