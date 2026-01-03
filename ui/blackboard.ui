@@ -9,8 +9,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>578</width>
-    <height>286</height>
+    <width>721</width>
+    <height>249</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -527,6 +527,62 @@ background: none;</string>
          </layout>
         </item>
         <item>
+         <spacer name="horizontalSpacer_2">
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
+          </property>
+          <property name="sizeType">
+           <enum>QSizePolicy::Fixed</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>52</width>
+            <height>20</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QLabel" name="countdown_day">
+          <property name="minimumSize">
+           <size>
+            <width>117</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="font">
+           <font>
+            <family>HarmonyOS Sans SC</family>
+            <pointsize>14</pointsize>
+            <weight>75</weight>
+            <italic>false</italic>
+            <bold>true</bold>
+           </font>
+          </property>
+          <property name="toolTip">
+           <string>剩余时间</string>
+          </property>
+          <property name="layoutDirection">
+           <enum>Qt::RightToLeft</enum>
+          </property>
+          <property name="styleSheet">
+           <string notr="true">border: none;
+color: rgb(255, 255, 255);
+font-weight: bold;
+background: none;</string>
+          </property>
+          <property name="text">
+           <string>节点 · -- 天</string>
+          </property>
+          <property name="textFormat">
+           <enum>Qt::PlainText</enum>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
          <spacer name="horizontalSpacer_ex_right">
           <property name="orientation">
            <enum>Qt::Horizontal</enum>
@@ -540,7 +596,7 @@ background: none;</string>
          </spacer>
         </item>
         <item>
-         <widget class="QPushButton" name="pushButton_light">
+         <widget class="QPushButton" name="pushButton_switch_mode">
           <property name="sizePolicy">
            <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
             <horstretch>0</horstretch>
@@ -572,8 +628,8 @@ border-radius: 17px;</string>
           </property>
           <property name="iconSize">
            <size>
-            <width>18</width>
-            <height>18</height>
+            <width>19</width>
+            <height>19</height>
            </size>
           </property>
          </widget>

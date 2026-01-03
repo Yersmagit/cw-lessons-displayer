@@ -12,8 +12,8 @@ import configparser
 from datetime import datetime, timedelta
 from typing import Dict, Any
 from PyQt5.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy, QPushButton, QSpacerItem
-from PyQt5.QtCore import Qt, QObject, QTimer, pyqtSignal
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtCore import Qt, QObject, QTimer, pyqtSignal, QSize
+from PyQt5.QtGui import QPixmap, QIcon
 from qfluentwidgets import isDarkTheme
 
 import ctypes
@@ -155,6 +155,703 @@ class GlobalEventFilter(QObject):
         except Exception as e:
             logger.error(f"停止全局事件监听器失败: {e}")
 
+
+class SpecialModeManager:
+    """特殊模式管理器基类 - 支持直接样式切换版本"""
+    
+    def __init__(self, plugin_instance):
+        self.plugin = plugin_instance
+        self.widget = None
+        self.lesson_layout = None
+        self.course_frames = {}
+        self.is_active = False
+        self.current_course_id = None
+        self.previous_highlight_id = None
+        self.current_state = None
+        self.progress_animation = None
+        self.current_progress = 0
+        self.current_mode = 'blackboard'  # 当前模式：'blackboard' 或 'whiteboard'
+        
+        # 添加一个字典来存储背景框架的颜色属性
+        self.frame_colors = {}
+        
+        # 添加动画计时器列表，用于管理所有正在进行的动画
+        self.animation_timers = []
+        
+    def init_ui(self):
+        """初始化UI"""
+        try:
+            from PyQt5 import uic
+            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
+            
+            # 获取UI文件路径
+            base_directory = self.plugin.app_contexts.get('Base_Directory', '.')
+            ui_file_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "ui", "blackboard.ui")
+            
+            logger.info(f"尝试加载特殊模式UI文件: {ui_file_path}")
+            
+            if not os.path.exists(ui_file_path):
+                logger.error(f"特殊模式UI文件不存在: {ui_file_path}")
+                return False
+                
+            # 如果之前已经有UI部件，先清理
+            if self.widget:
+                self.widget.deleteLater()
+                self.widget = None
+                self.lesson_layout = None
+                self.course_frames.clear()
+                
+            # 加载UI文件
+            self.widget = uic.loadUi(ui_file_path)
+            
+            if self.widget is None:
+                logger.error("特殊模式UI文件加载失败，返回None")
+                return False
+                
+            logger.info("特殊模式UI文件加载成功")
+            
+            # 设置窗口属性 - 覆盖任务栏全屏
+            self.widget.setWindowFlags(
+                Qt.FramelessWindowHint | 
+                Qt.WindowStaysOnTopHint |  # 置顶显示
+                Qt.Tool |
+                Qt.CustomizeWindowHint  # 自定义窗口，避免系统边框
+            )
+            self.widget.setAttribute(Qt.WA_TranslucentBackground)
+            self.widget.setAttribute(Qt.WA_ShowWithoutActivating)
+            
+            # 获取课程布局
+            self.lesson_layout = self.widget.findChild(QHBoxLayout, "horizontalLayout_lesson_list")
+            if not self.lesson_layout:
+                logger.error("未找到特殊模式课程布局")
+                return False
+                
+            logger.info("找到特殊模式课程布局")
+            
+            # 获取按钮并设置事件
+            self.setup_buttons()
+            
+            # 显示课程
+            self.display_lessons()
+            
+            # 初始化进度条动画
+            self.init_progress_animation()
+            
+            # 初始化倒计日显示
+            self.init_countdown_day()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"初始化特殊模式UI失败: {e}")
+            return False
+    
+    def apply_mode_styles(self, is_blackboard=True):
+        """根据模式应用样式表，带渐变效果"""
+        try:
+            if not self.widget:
+                return
+                
+            self.current_mode = 'blackboard' if is_blackboard else 'whiteboard'
+            mode_name = '熄屏' if is_blackboard else '白板'
+            
+            logger.info(f"应用{mode_name}模式样式，带渐变效果")
+            
+            # 获取所有需要设置样式的控件
+            background = self.widget.findChild(QFrame, "background")
+            background_2 = self.widget.findChild(QFrame, "background_2")
+            countdown_label = self.widget.findChild(QLabel, "countdown")
+            countdown_day_label = self.widget.findChild(QLabel, "countdown_day")
+            pushButton_switch_mode = self.widget.findChild(QPushButton, "pushButton_switch_mode")
+            pushButton_close = self.widget.findChild(QPushButton, "pushButton_close")
+            
+            # 根据模式设置不同的目标颜色
+            if is_blackboard:
+                # 熄屏模式样式（深色）
+                target_bg_color = (0, 0, 0, 255)  # 黑色，完全不透明
+                start_color = (255, 255, 255, 255)  # 从白色开始
+                text_color = "rgb(255, 255, 255)"
+                switch_button_icon = "img/dark/light.svg"
+                switch_button_icon_size = (19, 19)
+                close_button_icon = "img/dark/close.svg"
+                close_button_icon_size = (14, 14)
+                switch_button_tooltip = "切换到白板模式"
+                
+                # 基础按钮样式（深色）
+                button_base_style = """
+                    QPushButton {
+                        background-color: rgba(255, 255, 255, 50);
+                        border: 1px solid;
+                        border-color: rgba(255, 255, 255, 45);
+                        border-top-color: rgba(255, 255, 255, 60);
+                        border-radius: 17px;
+                    }
+                    QPushButton:hover {
+                        background-color: rgba(255, 255, 255, 60);
+                    }
+                    QPushButton:pressed {
+                        background-color: rgba(255, 255, 255, 40);
+                        border-color: rgba(255, 255, 255, 25);
+                        border-top-color: rgba(255, 255, 255, 30);
+                    }
+                """
+            else:
+                # 白板模式样式（浅色）
+                target_bg_color = (255, 255, 255, 255)  # 白色，完全不透明
+                start_color = (0, 0, 0, 255)  # 从黑色开始
+                text_color = "rgb(0, 0, 0)"
+                switch_button_icon = "img/dark.svg"
+                switch_button_icon_size = (18, 18)
+                close_button_icon = "img/close.svg"
+                close_button_icon_size = (14, 14)
+                switch_button_tooltip = "切换到熄屏模式"
+                
+                # 基础按钮样式（浅色）
+                button_base_style = """
+                    QPushButton {
+                        background-color: rgb(255, 255, 255);
+                        border: 1px solid;
+                        border-color: rgba(0, 0, 0, 20);
+                        border-bottom-color: rgba(0, 0, 0, 40);
+                        border-radius: 17px;
+                    }
+                    QPushButton:hover {
+                        background-color: rgba(250, 250, 250, 200);
+                        border-color: rgba(0, 0, 0, 25);
+                        border-bottom-color: rgba(0, 0, 0, 45);
+                    }
+                    QPushButton:pressed {
+                        background-color: rgba(240, 240, 240, 200);
+                        border-color: rgba(0, 0, 0, 25);
+                        border-bottom-color: rgba(0, 0, 0, 45);
+                    }
+                """
+            
+            # 为背景添加渐变动画
+            if background:
+                self.animate_background_color_smooth(background, start_color, target_bg_color, is_blackboard)
+            if background_2:
+                self.animate_background_color_smooth(background_2, start_color, target_bg_color, is_blackboard)
+            
+            # 立即应用文本颜色样式（文本不需要渐变）
+            text_style = f"border: none; color: {text_color}; font-weight: bold; background: none;"
+            if countdown_label:
+                countdown_label.setStyleSheet(text_style)
+            if countdown_day_label:
+                countdown_day_label.setStyleSheet(text_style)
+            
+            # 立即应用按钮样式和图标
+            if pushButton_switch_mode:
+                pushButton_switch_mode.setStyleSheet(button_base_style)
+                pushButton_switch_mode.setToolTip(switch_button_tooltip)
+                base_directory = self.plugin.app_contexts.get('Base_Directory', '.')
+                icon_full_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "ui", switch_button_icon)
+                if os.path.exists(icon_full_path):
+                    pushButton_switch_mode.setIcon(QIcon(icon_full_path))
+                    pushButton_switch_mode.setIconSize(QSize(*switch_button_icon_size))
+                else:
+                    logger.warning(f"切换模式按钮图标不存在: {icon_full_path}")
+            
+            if pushButton_close:
+                pushButton_close.setStyleSheet(button_base_style)
+                base_directory = self.plugin.app_contexts.get('Base_Directory', '.')
+                icon_full_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "ui", close_button_icon)
+                if os.path.exists(icon_full_path):
+                    pushButton_close.setIcon(QIcon(icon_full_path))
+                    pushButton_close.setIconSize(QSize(*close_button_icon_size))
+                else:
+                    logger.warning(f"关闭按钮图标不存在: {icon_full_path}")
+            
+            # 立即更新课程框架的颜色
+            self.update_lesson_frames_color(is_blackboard)
+
+            # 立即更新分隔线颜色
+            self.update_dividers_color(is_blackboard)
+            
+            logger.info(f"应用{mode_name}模式样式完成，渐变效果已启动")
+            
+        except Exception as e:
+            logger.error(f"应用模式样式失败: {e}")
+
+    def animate_background_color_smooth(self, frame, start_color, target_color, is_blackboard):
+        """使用QTimer实现平滑的颜色渐变动画"""
+        try:
+            from PyQt5.QtCore import QTimer
+            
+            # 停止该框架上可能存在的旧动画
+            if hasattr(frame, '_animation_timer') and frame._animation_timer:
+                frame._animation_timer.stop()
+                frame._animation_timer.deleteLater()
+            
+            # 动画参数
+            animation_duration = 300  # 300毫秒
+            animation_steps = 20      # 20步，每步25毫秒
+            current_step = 0
+            
+            # 计算每一步的颜色变化
+            r_step = (target_color[0] - start_color[0]) / animation_steps
+            g_step = (target_color[1] - start_color[1]) / animation_steps
+            b_step = (target_color[2] - start_color[2]) / animation_steps
+            a_step = (target_color[3] - start_color[3]) / animation_steps
+            
+            # 创建动画计时器
+            frame._animation_timer = QTimer()
+            frame._animation_timer.setInterval(animation_duration // animation_steps)
+            
+            def update_color():
+                nonlocal current_step
+                if current_step < animation_steps:
+                    # 计算当前颜色
+                    current_r = int(start_color[0] + r_step * current_step)
+                    current_g = int(start_color[1] + g_step * current_step)
+                    current_b = int(start_color[2] + b_step * current_step)
+                    current_a = int(start_color[3] + a_step * current_step)
+                    
+                    # 确保颜色值在有效范围内
+                    current_r = max(0, min(255, current_r))
+                    current_g = max(0, min(255, current_g))
+                    current_b = max(0, min(255, current_b))
+                    current_a = max(0, min(255, current_a))
+                    
+                    # 设置颜色
+                    style = f"background-color: rgba({current_r}, {current_g}, {current_b}, {current_a});"
+                    frame.setStyleSheet(style)
+                    
+                    current_step += 1
+                else:
+                    # 动画完成，设置最终颜色并停止计时器
+                    style = f"background-color: rgba({target_color[0]}, {target_color[1]}, {target_color[2]}, {target_color[3]});"
+                    frame.setStyleSheet(style)
+                    frame._animation_timer.stop()
+                    logger.debug(f"背景颜色渐变动画完成: {target_color}")
+            
+            # 连接信号
+            frame._animation_timer.timeout.connect(update_color)
+            
+            # 启动动画
+            frame._animation_timer.start()
+            
+            logger.debug(f"背景颜色渐变动画已启动: {start_color} -> {target_color}")
+            
+        except Exception as e:
+            logger.error(f"创建背景颜色渐变动画失败: {e}")
+            # 失败时直接设置样式
+            style = f"background-color: rgba({target_color[0]}, {target_color[1]}, {target_color[2]}, {target_color[3]});"
+            frame.setStyleSheet(style)
+                
+    def update_frame_color(self, frame, color):
+        """更新框架的背景颜色"""
+        try:
+            if not frame:
+                return
+                
+            # 确保颜色是元组
+            if hasattr(color, '__len__') and len(color) >= 4:
+                r, g, b, a = color[:4]
+            else:
+                # 如果颜色是QColor，转换为元组
+                from PyQt5.QtGui import QColor
+                if isinstance(color, QColor):
+                    r = color.red()
+                    g = color.green()
+                    b = color.blue()
+                    a = color.alpha()
+                else:
+                    return
+            
+            # 设置样式
+            style = f"background-color: rgba({r}, {g}, {b}, {a});"
+            frame.setStyleSheet(style)
+            
+        except Exception as e:
+            logger.error(f"更新框架颜色失败: {e}")
+        
+    def update_lesson_frames_color(self, is_blackboard=True):
+        """更新课程框架的颜色"""
+        try:
+            if not self.course_frames:
+                return
+                
+            for course_id, frame in self.course_frames.items():
+                label = frame.findChild(QLabel)
+                if label:
+                    # 修复：检查是否是当前高亮的课程
+                    if course_id == self.current_course_id:
+                        # 高亮课程字体颜色始终为白色
+                        label.setStyleSheet("border: none; color: #ffffff; font-weight: bold; background: none;")
+                    else:
+                        # 非高亮课程根据模式设置颜色
+                        if is_blackboard:
+                            label.setStyleSheet("border: none; color: rgb(255, 255, 255); font-weight: bold; background: none;")
+                        else:
+                            label.setStyleSheet("border: none; color: rgb(0, 0, 0); font-weight: bold; background: none;")
+                    
+            logger.debug(f"更新了{len(self.course_frames)}个课程框架的颜色")
+            
+        except Exception as e:
+            logger.error(f"更新课程框架颜色失败: {e}")
+
+    def update_dividers_color(self, is_blackboard=True):
+        """更新分隔线颜色"""
+        try:
+            if not self.lesson_layout:
+                return
+                
+            # 遍历布局中的所有分隔线并更新颜色
+            for i in range(self.lesson_layout.count()):
+                item = self.lesson_layout.itemAt(i)
+                if item and item.widget():
+                    widget = item.widget()
+                    # 检查是否是分隔线（分隔线是QLabel，文本为"|"）
+                    if isinstance(widget, QLabel) and widget.text() == "|":
+                        if is_blackboard:
+                            widget.setStyleSheet("border: none; color: rgb(255, 255, 255); font-weight: bold; background: none;")
+                        else:
+                            widget.setStyleSheet("border: none; color: rgb(0, 0, 0); font-weight: bold; background: none;")
+                            
+            logger.debug("更新分隔线颜色完成")
+            
+        except Exception as e:
+            logger.error(f"更新分隔线颜色失败: {e}")
+    
+    def setup_buttons(self):
+        """设置按钮事件"""
+        try:
+            # 获取关闭按钮并设置事件
+            pushButton_close = self.widget.findChild(QPushButton, "pushButton_close")
+            if pushButton_close:
+                pushButton_close.clicked.connect(self.plugin.close_special_mode)
+                logger.debug("设置特殊模式关闭按钮事件")
+            
+            # 获取模式切换按钮并设置事件
+            pushButton_switch_mode = self.widget.findChild(QPushButton, "pushButton_switch_mode")
+            if pushButton_switch_mode:
+                # 连接切换模式事件
+                pushButton_switch_mode.clicked.connect(self.plugin.switch_special_mode)
+                logger.debug("设置特殊模式切换按钮事件")
+                
+        except Exception as e:
+            logger.error(f"设置特殊模式按钮事件失败: {e}")
+    
+    def display_lessons(self):
+        """显示课程"""
+        try:
+            if not self.lesson_layout:
+                logger.error("特殊模式课程布局未初始化")
+                return
+                
+            # 获取当前课程
+            current_lessons = self.plugin.app_contexts.get('Current_Lessons', {})
+            if not current_lessons:
+                logger.info("没有找到当前课程数据")
+                return
+                
+            logger.info(f"获取到特殊模式课程数据: {current_lessons}")
+            
+            # 清空课程框架字典和状态
+            self.course_frames.clear()
+            self.current_course_id = None
+            self.previous_highlight_id = None
+            self.current_state = None
+            
+            # 按时间段分组
+            lesson_groups = self.plugin.group_lessons_by_period(current_lessons)
+            logger.info(f"特殊模式分组后的课程: {lesson_groups}")
+            
+            # 清空现有布局
+            self.clear_lesson_layout()
+            
+            # 动态创建课程显示
+            group_count = len(lesson_groups)
+            for i, (period, lessons) in enumerate(lesson_groups.items()):
+                # 获取这个时间段的所有课程ID
+                period_course_ids = [key for key in current_lessons.keys() if len(key) >= 2 and key[1] == period]
+                
+                # 添加本组的课程
+                for j, (course_id, abbreviation) in enumerate(zip(period_course_ids, lessons)):
+                    frame = self.create_lesson_frame(abbreviation, course_id)
+                    if frame:
+                        self.lesson_layout.addWidget(frame)
+                        # 存储课程框架引用
+                        self.course_frames[course_id] = frame
+                        logger.debug(f"添加特殊模式课程框架: {abbreviation} (ID: {course_id})")
+                    
+                    # 课程之间添加6px间隔（最后一个课程后不添加）
+                    if j < len(lessons) - 1:
+                        spacer = self.plugin.create_spacer(6)
+                        if spacer:
+                            self.lesson_layout.addItem(spacer)
+                
+                # 组之间添加分隔线（最后一组后不添加）
+                if i < group_count - 1:
+                    # 添加10px间隔
+                    spacer_before = self.plugin.create_spacer(10)
+                    if spacer_before:
+                        self.lesson_layout.addItem(spacer_before)
+                    
+                    # 添加分隔线
+                    divider = self.create_divider()
+                    if divider:
+                        self.lesson_layout.addWidget(divider)
+                    
+                    # 添加10px间隔
+                    spacer_after = self.plugin.create_spacer(10)
+                    if spacer_after:
+                        self.lesson_layout.addItem(spacer_after)
+            
+            logger.info("特殊模式课程显示更新完成")
+            
+        except Exception as e:
+            logger.error(f"显示特殊模式课程失败: {e}")
+    
+    def create_lesson_frame(self, abbreviation, course_id):
+        """创建课程显示框架"""
+        try:
+            # 创建框架
+            frame = QFrame()
+            frame.setObjectName(f"special_frame_{course_id}")
+            frame.setMinimumSize(40, 40)
+            frame.setMaximumSize(16777215, 40)
+            frame.setStyleSheet("border-radius: 20px; background-color: none")
+            frame.setFrameShape(QFrame.StyledPanel)
+            frame.setFrameShadow(QFrame.Raised)
+            
+            # 创建布局
+            layout = QHBoxLayout(frame)
+            layout.setSpacing(0)
+            layout.setContentsMargins(6, 0, 6, 0)
+            
+            # 创建标签
+            label = QLabel(abbreviation)
+            label.setObjectName(f"special_label_{course_id}")
+            label.setFont(self.plugin.create_lesson_font())
+            
+            # 修复：检查是否是当前高亮的课程
+            if course_id == self.current_course_id:
+                # 高亮课程字体颜色始终为白色
+                label.setStyleSheet("border: none; color: #ffffff; font-weight: bold; background: none;")
+            else:
+                # 非高亮课程根据当前模式设置颜色
+                if self.current_mode == 'blackboard':
+                    label.setStyleSheet("border: none; color: rgb(255, 255, 255); font-weight: bold; background: none;")
+                else:
+                    label.setStyleSheet("border: none; color: rgb(0, 0, 0); font-weight: bold; background: none;")
+                
+            label.setTextFormat(Qt.PlainText)
+            label.setAlignment(Qt.AlignLeading | Qt.AlignLeft | Qt.AlignVCenter)
+            
+            layout.addWidget(label)
+            
+            return frame
+            
+        except Exception as e:
+            logger.error(f"创建特殊模式课程框架失败: {e}")
+            return None
+    
+    def create_divider(self):
+        """创建分隔线"""
+        try:
+            divider = QLabel("|")
+            divider.setFont(self.plugin.create_lesson_font())
+            # 修复：直接使用 self.current_mode 来判断当前模式
+            if self.current_mode == 'blackboard':
+                divider.setStyleSheet("border: none; color: rgb(255, 255, 255); font-weight: bold; background: none;")
+            else:
+                divider.setStyleSheet("border: none; color: rgb(0, 0, 0); font-weight: bold; background: none;")
+            divider.setTextFormat(Qt.PlainText)
+            divider.setAlignment(Qt.AlignCenter)
+            return divider
+        except Exception as e:
+            logger.error(f"创建特殊模式分隔线失败: {e}")
+            return None
+    
+    def clear_lesson_layout(self):
+        """清空课程布局"""
+        if not self.lesson_layout:
+            return
+            
+        # 清空课程框架字典
+        self.course_frames.clear()
+        
+        # 移除所有子项
+        while self.lesson_layout.count():
+            item = self.lesson_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.spacerItem():
+                self.lesson_layout.removeItem(item)
+    
+    def init_progress_animation(self):
+        """初始化进度条动画"""
+        try:
+            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
+            
+            countdown_progress = self.widget.findChild(QObject, "countdown_progressBar")
+            if countdown_progress:
+                self.progress_animation = QPropertyAnimation(countdown_progress, b"val")
+                self.progress_animation.setDuration(800)  # 800毫秒动画时长
+                self.progress_animation.setEasingCurve(QEasingCurve.OutCubic)
+                self.current_progress = 0
+                logger.debug("初始化特殊模式进度条动画完成")
+        except Exception as e:
+            logger.error(f"初始化特殊模式进度条动画失败: {e}")
+    
+    def animate_progress(self, target_progress):
+        """动画更新进度条"""
+        try:
+            if not self.progress_animation or not self.is_active or not self.widget:
+                return
+                
+            countdown_progress = self.widget.findChild(QObject, "countdown_progressBar")
+            if not countdown_progress:
+                return
+                
+            # 停止当前动画
+            self.progress_animation.stop()
+            
+            # 设置动画范围
+            self.progress_animation.setStartValue(self.current_progress)
+            self.progress_animation.setEndValue(target_progress)
+            
+            # 开始动画
+            self.progress_animation.start()
+            
+            # 更新当前进度
+            self.current_progress = target_progress
+            
+        except Exception as e:
+            logger.error(f"特殊模式进度条动画失败: {e}")
+    
+    def init_countdown_day(self):
+        """初始化倒计日显示"""
+        try:
+            if not self.widget:
+                return
+                
+            # 加载倒计日设置
+            self.plugin.load_countdown_settings()
+            
+            # 获取倒计日标签和间隔
+            countdown_day_label = self.widget.findChild(QLabel, "countdown_day")
+            horizontal_spacer_2 = self.widget.findChild(QObject, "horizontalSpacer_2")
+            
+            if not countdown_day_label:
+                logger.warning("未找到特殊模式倒计日标签")
+                return
+                
+            if self.plugin.show_countdown_day:
+                # 显示倒计日元素
+                countdown_day_label.setVisible(True)
+                if horizontal_spacer_2:
+                    horizontal_spacer_2.setVisible(True)
+                    
+                # 更新倒计日显示
+                self.update_countdown_day()
+            else:
+                # 隐藏倒计日元素
+                countdown_day_label.setVisible(False)
+                if horizontal_spacer_2:
+                    horizontal_spacer_2.setVisible(False)
+                    
+            logger.debug("特殊模式倒计日初始化完成")
+            
+        except Exception as e:
+            logger.error(f"初始化特殊模式倒计日失败: {e}")
+    
+    def update_countdown_day(self):
+        """更新倒计日显示"""
+        try:
+            if not self.plugin.show_countdown_day or not self.widget:
+                return
+                
+            countdown_day_label = self.widget.findChild(QLabel, "countdown_day")
+            if not countdown_day_label:
+                return
+                
+            # 计算剩余天数
+            remaining_days = self.plugin.calculate_days_remaining()
+            if remaining_days is None:
+                countdown_day_label.setText("节点 · -- 天")
+                logger.debug("无法计算剩余天数，显示默认文本")
+                return
+                
+            # 更新文本
+            text = f"{self.plugin.countdown_text} · {remaining_days} 天"
+            countdown_day_label.setText(text)
+            
+            # 调整标签宽度以适应文本
+            font_metrics = countdown_day_label.fontMetrics()
+            text_width = font_metrics.horizontalAdvance(text) + 10  # 加上边距
+            countdown_day_label.setFixedWidth(min(text_width, 200))  # 限制最大宽度
+            
+            logger.debug(f"更新特殊模式倒计日: {text}, 宽度: {countdown_day_label.width()}px")
+            
+        except Exception as e:
+            logger.error(f"更新特殊模式倒计日失败: {e}")
+    
+    def cleanup(self):
+        """清理资源"""
+        try:
+            if self.widget:
+                # 停止所有动画计时器
+                for timer in self.animation_timers[:]:
+                    if timer and timer.isActive():
+                        timer.stop()
+                    if timer:
+                        timer.deleteLater()
+                self.animation_timers.clear()
+                
+                # 停止框架上的动画计时器
+                if hasattr(self.widget, '_animation_timer'):
+                    if self.widget._animation_timer and self.widget._animation_timer.isActive():
+                        self.widget._animation_timer.stop()
+                    if self.widget._animation_timer:
+                        self.widget._animation_timer.deleteLater()
+                
+                # 查找并停止所有框架的动画计时器
+                for frame in self.widget.findChildren(QFrame):
+                    if hasattr(frame, '_animation_timer'):
+                        if frame._animation_timer and frame._animation_timer.isActive():
+                            frame._animation_timer.stop()
+                        if frame._animation_timer:
+                            frame._animation_timer.deleteLater()
+                
+                # 隐藏窗口
+                self.widget.hide()
+                
+                # 断开所有信号连接
+                try:
+                    pushButton_close = self.widget.findChild(QPushButton, "pushButton_close")
+                    if pushButton_close:
+                        pushButton_close.clicked.disconnect()
+                except:
+                    pass
+                    
+                try:
+                    pushButton_switch_mode = self.widget.findChild(QPushButton, "pushButton_switch_mode")
+                    if pushButton_switch_mode:
+                        pushButton_switch_mode.clicked.disconnect()
+                except:
+                    pass
+                
+                # 删除窗口
+                self.widget.deleteLater()
+                self.widget = None
+                
+                # 清理相关资源
+                self.lesson_layout = None
+                self.course_frames.clear()
+                
+                logger.debug("特殊模式窗口已清理")
+            
+            # 重置状态
+            self.is_active = False
+            self.current_progress = 0
+            self.current_mode = 'blackboard'
+            
+        except Exception as e:
+            logger.error(f"清理特殊模式资源失败: {e}")
+
 class Plugin(PluginBase):
     """显示今日课程插件"""
     
@@ -202,29 +899,11 @@ class Plugin(PluginBase):
         self.pushButton_dark = None
 
         # 熄屏模式相关变量
-        self.blackboard_widget = None  # 熄屏模式UI部件
-        self.blackboard_lesson_layout = None  # 熄屏模式课程布局
-        self.blackboard_course_frames = {}  # 熄屏模式课程框架字典
         self.is_blackboard_mode = False  # 是否处于熄屏模式
-        self.blackboard_current_course_id = None  # 熄屏模式当前课程ID
-        self.blackboard_previous_highlight_id = None  # 熄屏模式之前高亮的课程ID
-        self.blackboard_current_state = None  # 熄屏模式当前状态
 
         # 白板模式相关变量
-        self.whiteboard_widget = None  # 白板模式UI部件
-        self.whiteboard_lesson_layout = None  # 白板模式课程布局
-        self.whiteboard_course_frames = {}  # 白板模式课程框架字典
         self.is_whiteboard_mode = False  # 是否处于白板模式
-        self.whiteboard_current_course_id = None  # 白板模式当前课程ID
-        self.whiteboard_previous_highlight_id = None  # 白板模式之前高亮的课程ID
-        self.whiteboard_current_state = None  # 白板模式当前状态
 
-        # 进度条动画相关变量
-        self.blackboard_progress_animation = None
-        self.whiteboard_progress_animation = None
-        self.current_blackboard_progress = 0
-        self.current_whiteboard_progress = 0
-        
         # 自动化功能相关变量
         self.automation_settings = {}  # 存储自动化设置
         self.current_lesson_name = None  # 当前课程名称
@@ -246,6 +925,11 @@ class Plugin(PluginBase):
         # 自动化相关变量
         self.current_automation_mode = None  # 当前自动化模式
         self.realtime_check_timer = None     # 实时监测计时器
+
+        # 倒计日相关变量
+        self.countdown_date = None  # 倒计日日期
+        self.countdown_text = ""    # 倒计日文本
+        self.show_countdown_day = False  # 是否显示倒计日
 
         # 主组件动画相关变量
         self.main_widget_animation = None  # 主组件动画
@@ -270,6 +954,10 @@ class Plugin(PluginBase):
         self.tomorrow_course_icon_label = None  # 明日课程图标标签
         self.tomorrow_course_text_label = None  # 明日课程文本标签
         self.tomorrow_course_spacer = None  # 明日课程间隔
+
+        # 特殊模式管理器
+        self.special_mode_manager = None  # 统一管理熄屏和白板模式
+        self.current_special_mode = None  # 'blackboard' 或 'whiteboard' 或 None
         
         logger.info("今日课程 插件初始化完成")
     
@@ -298,6 +986,57 @@ class Plugin(PluginBase):
         
         # 避免日志传播到根logger
         logger.propagate = False
+    
+    def load_countdown_settings(self):
+        """加载倒计日设置"""
+        try:
+            base_directory = self.app_contexts.get('Base_Directory', '.')
+            config_path = os.path.join(base_directory, "config", "config.ini")
+            
+            if not os.path.exists(config_path):
+                logger.warning(f"config.ini文件不存在: {config_path}")
+                self.show_countdown_day = False
+                return
+                
+            config = configparser.ConfigParser()
+            config.read(config_path, encoding='utf-8')
+            
+            # 检查是否有Date部分
+            if not config.has_section('Date'):
+                logger.warning("config.ini中没有[Date]部分")
+                self.show_countdown_day = False
+                return
+                
+            # 读取倒计日配置
+            self.countdown_text = config.get('Date', 'cd_text_custom', fallback='').strip()
+            date_str = config.get('Date', 'countdown_date', fallback='').strip()
+            
+            # 检查配置是否完整
+            if not self.countdown_text or not date_str:
+                logger.warning("倒计日配置不完整，不显示倒计日")
+                self.show_countdown_day = False
+                return
+                
+            # 解析日期
+            try:
+                self.countdown_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                current_date = datetime.today().date()
+                
+                # 检查是否应该显示倒计日
+                if current_date < self.countdown_date:
+                    self.show_countdown_day = True
+                    logger.info(f"倒计日配置有效: 文本='{self.countdown_text}', 日期={self.countdown_date}")
+                else:
+                    self.show_countdown_day = False
+                    logger.info(f"倒计日已过或等于当前日期: {self.countdown_date}")
+                    
+            except ValueError as e:
+                logger.error(f"解析倒计日日期失败: {e}")
+                self.show_countdown_day = False
+                
+        except Exception as e:
+            logger.error(f"加载倒计日设置失败: {e}")
+            self.show_countdown_day = False
 
     def load_automation_settings(self):
         """加载自动化设置"""
@@ -583,7 +1322,7 @@ class Plugin(PluginBase):
         """获取课程缩写"""
         try:
             base_directory = self.app_contexts.get('Base_Directory', '.')
-            subject_config_path = os.path.join(base_directory, "config", "data", "subject.json")
+            subject_config_path = os.path.join(base_directory, "data", "subject.json")
             
             if not os.path.exists(subject_config_path):
                 logger.warning(f"subject.json文件不存在: {subject_config_path}")
@@ -606,29 +1345,48 @@ class Plugin(PluginBase):
             return subject_name[0] if subject_name else " "
     
     def group_lessons_by_period(self, lessons_dict):
-        """按时间段分组课程"""
+        """按时间段分组课程（适配新版本Current_Lessons元组键）"""
         groups = {}
         for key, lesson_name in lessons_dict.items():
-            if len(key) >= 2:
-                period = key[1]  # 第二个字符代表时间段
+            # 处理元组格式的键：例如 (0, '0', 1)
+            if isinstance(key, tuple) and len(key) >= 3:
+                period = str(key[1])  # 第二个元素是节点编号
                 if period not in groups:
                     groups[period] = []
                 # 获取课程缩写
                 abbreviation = self.get_subject_abbreviation(lesson_name)
                 groups[period].append(abbreviation)
+            # 处理字符串格式的键（旧版本兼容）
+            elif isinstance(key, str) and len(key) >= 2:
+                period = key[1]  # 第二个字符代表时间段
+                if period not in groups:
+                    groups[period] = []
+                abbreviation = self.get_subject_abbreviation(lesson_name)
+                groups[period].append(abbreviation)
         
-        # 按时间段排序
-        sorted_groups = dict(sorted(groups.items()))
+        # 按时间段排序（按数字或字母顺序）
+        try:
+            # 尝试将时间段转换为数字排序
+            sorted_groups = dict(sorted(groups.items(), key=lambda x: int(x[0]) if x[0].isdigit() else x[0]))
+        except:
+            # 如果转换失败，使用默认排序
+            sorted_groups = dict(sorted(groups.items()))
+        
         return sorted_groups
     
     def calculate_current_course(self):
-        """计算当前课程"""
+        """计算当前课程（适配新版本Current_Lessons元组键）"""
         try:
             # 获取必要数据
             current_time_str = self.app_contexts.get('Current_Time', '00:00:00')
             current_part = self.app_contexts.get('Current_Part', (None, 0))
-            timeline_data = self.app_contexts.get('Timeline_Data', {})
+            raw_timeline_data = self.app_contexts.get('Timeline_Data', [])
             state = self.app_contexts.get('State', 0)
+            
+            logger.debug(f"计算当前课程 - 当前时间: {current_time_str}, Current_Part: {current_part}")
+            
+            # 转换时间线数据格式
+            timeline_data = self.convert_timeline_data(raw_timeline_data)
             
             # 解析当前时间
             from datetime import datetime, timedelta
@@ -641,101 +1399,140 @@ class Plugin(PluginBase):
                 return None
                 
             node_start_time = node_start_datetime.time()
+            logger.debug(f"节点开始时间: {node_start_time}, 节点索引: {node_index}")
             
-            # 获取当前节点的活动
+            # 筛选当前节点的所有活动（包括上课和课间）
             node_activities = []
-            for key, duration in timeline_data.items():
-                if len(key) >= 2 and key[1] == str(node_index):
-                    node_activities.append((key, int(duration)))
+            for activity in timeline_data:
+                if isinstance(activity, list) and len(activity) >= 4:
+                    if str(activity[1]) == str(node_index):
+                        node_activities.append(activity)
+            
+            logger.debug(f"筛选到的节点活动: {node_activities}")
             
             if not node_activities:
                 logger.debug(f"未找到节点 {node_index} 的活动数据")
                 return None
             
-            # 按照正确的顺序排序：先按第三个字符（活动序号）排序，再按第一个字符（活动类型）排序
-            # 确保同一序号的活动，课程(a)排在课间(f)之前
-            def activity_sort_key(item):
-                activity_id = item[0]
-                # 第三个字符是活动序号
-                activity_number = activity_id[2] if len(activity_id) >= 3 else '0'
-                # 第一个字符是活动类型
-                activity_type = activity_id[0]
-                # 先按活动序号排序，再按活动类型排序（a在f之前）
-                # 将活动序号转换为整数进行排序，确保数字顺序正确
-                return (int(activity_number) if activity_number.isdigit() else 0, activity_type)
+            # 按照活动编号排序
+            node_activities.sort(key=lambda x: x[2])
             
-            node_activities.sort(key=activity_sort_key)
-            
-            # 计算每个活动的开始时间
-            activity_start_times = {}
+            # 计算每个上课活动的开始时间和结束时间
+            activity_times = {}
             current_time_accumulated = datetime.combine(datetime.today(), node_start_time)
             
-            # 按照排序后的顺序处理活动
-            for activity_id, duration in node_activities:
-                activity_start_times[activity_id] = current_time_accumulated.time()
+            # 遍历所有活动，但只存储上课活动的时间信息
+            for activity in node_activities:
+                activity_type, node_num, activity_num, duration_str = activity
+                try:
+                    duration = int(duration_str)
+                except (ValueError, TypeError):
+                    duration = 0
+                
+                # 如果是上课活动（类型为0），存储其时间信息
+                if activity_type == 0:
+                    # 注意：Current_Lessons的键是(0, node_num, activity_num)
+                    activity_id = (0, node_num, activity_num)
+                    start_time = current_time_accumulated.time()
+                    end_time = (current_time_accumulated + timedelta(minutes=duration)).time()
+                    activity_times[activity_id] = {
+                        'start': start_time,
+                        'end': end_time,
+                        'duration': duration
+                    }
+                    logger.debug(f"上课活动 {activity_id}: {start_time} - {end_time} ({duration}分钟)")
+                
+                # 无论上课还是课间，都累计时间
                 current_time_accumulated += timedelta(minutes=duration)
             
             # 节点结束时间
             node_end_time = current_time_accumulated.time()
+            logger.debug(f"节点结束时间: {node_end_time}, 当前时间: {current_time}")
             
-            # 确定当前活动
+            # 确定当前课程
             current_activity_id = None
             
             # 如果当前时间在节点开始之前，选择第一个课程
             if current_time < node_start_time:
-                # 找到第一个课程活动（以'a'开头的活动）
-                for activity_id, _ in node_activities:
-                    if activity_id.startswith('a'):
-                        current_activity_id = activity_id
+                logger.debug(f"当前时间 {current_time} 在节点开始时间 {node_start_time} 之前")
+                # 找到第一个课程活动
+                for activity in node_activities:
+                    if activity[0] == 0:  # 上课
+                        current_activity_id = (0, activity[1], activity[2])
+                        logger.debug(f"选择第一个课程: {current_activity_id}")
                         break
             # 如果当前时间超过节点结束时间，返回None
             elif current_time >= node_end_time:
-                logger.debug("当前时间超过节点结束时间")
+                logger.debug(f"当前时间 {current_time} 超过节点结束时间 {node_end_time}")
                 return None
             else:
-                # 在当前时间范围内，找到当前活动
-                for i, (activity_id, duration) in enumerate(node_activities):
-                    start_time = activity_start_times[activity_id]
-                    activity_end_time = (datetime.combine(datetime.today(), start_time) + 
-                                    timedelta(minutes=duration)).time()
+                # 在当前时间范围内，找到当前课程
+                for activity_id, times in activity_times.items():
+                    start_time = times['start']
+                    end_time = times['end']
                     
-                    if start_time <= current_time < activity_end_time:
-                        # 如果是课间活动（以'f'开头），则选择下一个课程
-                        if activity_id.startswith('f'):
-                            # 找到下一个课程活动
-                            next_activities = node_activities[i+1:]
-                            for next_id, _ in next_activities:
-                                if next_id.startswith('a'):
-                                    current_activity_id = next_id
-                                    break
-                        else:
-                            current_activity_id = activity_id
+                    logger.debug(f"检查课程 {activity_id}: {start_time} <= {current_time} < {end_time}")
+                    if start_time <= current_time < end_time:
+                        current_activity_id = activity_id
+                        logger.debug(f"找到当前课程: {current_activity_id}")
                         break
                 
-                # 如果没有找到匹配的活动，选择最后一个课程
+                # 如果没有找到匹配的课程，可能是课间时间
                 if not current_activity_id:
-                    for activity_id, _ in reversed(node_activities):
-                        if activity_id.startswith('a'):
+                    logger.debug("未找到匹配课程，可能处于课间时间")
+                    # 找到当前时间之后的下一个上课活动
+                    for activity_id, times in activity_times.items():
+                        start_time = times['start']
+                        if start_time > current_time:
                             current_activity_id = activity_id
+                            logger.debug(f"选择下一个课程: {current_activity_id}")
                             break
+                
+                # 如果还是没有找到，选择最后一个课程
+                if not current_activity_id and activity_times:
+                    logger.debug("未找到匹配课程，选择最后一个课程")
+                    # 获取最后一个课程
+                    last_activity_id = list(activity_times.keys())[-1]
+                    current_activity_id = last_activity_id
+                    logger.debug(f"选择最后一个课程: {current_activity_id}")
             
+            logger.debug(f"最终确定的当前课程: {current_activity_id}")
             return current_activity_id
             
         except Exception as e:
-            logger.error(f"计算当前课程失败: {e}")
+            logger.error(f"计算当前课程失败: {e}", exc_info=True)
+            return None
+        
+    def calculate_days_remaining(self):
+        """计算剩余天数"""
+        try:
+            if not self.countdown_date:
+                return None
+                
+            current_date = datetime.today().date()
+            if current_date >= self.countdown_date:
+                return 0
+                
+            remaining_days = (self.countdown_date - current_date).days
+            return remaining_days
+            
+        except Exception as e:
+            logger.error(f"计算剩余天数失败: {e}")
             return None
         
     def get_current_activity_time_info(self):
-        """获取当前活动的时间信息（总时长和剩余时间）
-        Returns:
-            tuple: (total_seconds, remaining_seconds, current_activity_id, state) 或 (None, None, None, None)
-        """
+        """获取当前活动的时间信息（包括上课和课间）"""
         try:
             # 获取必要数据
             current_time_str = self.app_contexts.get('Current_Time', '00:00:00')
             current_part = self.app_contexts.get('Current_Part', (None, 0))
-            timeline_data = self.app_contexts.get('Timeline_Data', {})
+            raw_timeline_data = self.app_contexts.get('Timeline_Data', [])
             state = self.app_contexts.get('State', 0)
+            
+            logger.debug(f"获取时间信息 - 当前时间: {current_time_str}, Current_Part: {current_part}, State: {state}")
+            
+            # 转换时间线数据格式
+            timeline_data = self.convert_timeline_data(raw_timeline_data)
             
             # 解析当前时间
             from datetime import datetime, timedelta
@@ -748,80 +1545,96 @@ class Plugin(PluginBase):
                 return None, None, None, None
                 
             node_start_time = node_start_datetime.time()
+            logger.debug(f"节点开始时间: {node_start_time}, 节点索引: {node_index}")
             
-            # 获取当前节点的活动
+            # 筛选当前节点的所有活动
             node_activities = []
-            for key, duration in timeline_data.items():
-                if len(key) >= 2 and key[1] == str(node_index):
-                    node_activities.append((key, int(duration)))
+            for activity in timeline_data:
+                if isinstance(activity, list) and len(activity) >= 4:
+                    if str(activity[1]) == str(node_index):
+                        node_activities.append(activity)
+            
+            logger.debug(f"筛选到的节点活动: {node_activities}")
             
             if not node_activities:
                 logger.warning(f"未找到节点 {node_index} 的活动数据")
                 return None, None, None, None
             
-            # 按照正确的顺序排序：先按第三个字符（活动序号）排序，再按第一个字符（活动类型）排序
-            def activity_sort_key(item):
-                activity_id = item[0]
-                activity_number = activity_id[2] if len(activity_id) >= 3 else '0'
-                activity_type = activity_id[0]
-                return (int(activity_number) if activity_number.isdigit() else 0, activity_type)
+            # 按照活动编号排序
+            node_activities.sort(key=lambda x: x[2])
             
-            node_activities.sort(key=activity_sort_key)
-            
-            # 计算每个活动的开始时间和结束时间
+            # 计算每个活动的开始和结束时间
             activity_times = {}
             current_time_accumulated = datetime.combine(datetime.today(), node_start_time)
             
-            for activity_id, duration in node_activities:
+            for activity in node_activities:
+                activity_type, node_num, activity_num, duration_str = activity
+                try:
+                    duration = int(duration_str)
+                except (ValueError, TypeError):
+                    duration = 0
+                
+                # 生成活动ID：类型+节点+活动编号
+                # 对于上课活动：activity_type=0，对于课间活动：activity_type=1
+                activity_id = (activity_type, node_num, activity_num)
                 start_time = current_time_accumulated.time()
                 end_time = (current_time_accumulated + timedelta(minutes=duration)).time()
+                
                 activity_times[activity_id] = {
                     'start': start_time,
                     'end': end_time,
-                    'duration_minutes': duration,
-                    'duration_seconds': duration * 60
+                    'duration': duration,
+                    'duration_seconds': duration * 60,
+                    'activity_type': activity_type
                 }
+                
+                logger.debug(f"活动 {activity_id}: {start_time} - {end_time} ({duration}分钟)")
                 current_time_accumulated += timedelta(minutes=duration)
             
             # 节点结束时间
             node_end_time = current_time_accumulated.time()
+            logger.debug(f"节点结束时间: {node_end_time}, 当前时间: {current_time}")
             
             # 确定当前活动
             current_activity_id = None
             current_state = state
             
-            # 如果当前时间在节点开始之前，选择第一个活动
+            # 如果当前时间在节点开始之前
             if current_time < node_start_time:
-                current_activity_id = node_activities[0][0]
-                current_state = 0  # 设置为课间状态
-                
-                # 计算剩余时间：从当前时间到节点开始时间
-                node_start_datetime_obj = datetime.combine(datetime.today(), node_start_time)
-                calibrated_datetime = datetime.combine(datetime.today(), current_time)
-                remaining_timedelta = node_start_datetime_obj - calibrated_datetime
-                remaining_seconds = max(0, int(remaining_timedelta.total_seconds()))
-                
-                # 总时长设为None，表示活动尚未开始
-                total_seconds = None
-                
-                ### logger.debug(f"当前时间在节点开始之前，当前活动: {current_activity_id}, 剩余时间: {remaining_seconds}秒, 状态: {current_state}")
-                
-                return total_seconds, remaining_seconds, current_activity_id, current_state
+                logger.debug(f"当前时间 {current_time} 在节点开始时间 {node_start_time} 之前")
+                # 选择第一个活动
+                if node_activities:
+                    first_activity = node_activities[0]
+                    current_activity_id = (first_activity[0], first_activity[1], first_activity[2])
+                    current_state = first_activity[0]  # 0=上课，1=课间
+                    
+                    # 计算剩余时间：从当前时间到节点开始时间
+                    node_start_datetime_obj = datetime.combine(datetime.today(), node_start_time)
+                    calibrated_datetime = datetime.combine(datetime.today(), current_time)
+                    remaining_timedelta = node_start_datetime_obj - calibrated_datetime
+                    remaining_seconds = max(0, int(remaining_timedelta.total_seconds()))
+                    
+                    # 总时长设为None，表示活动尚未开始
+                    total_seconds = None
+                    
+                    logger.debug(f"当前时间在节点开始之前，当前活动: {current_activity_id}, 剩余时间: {remaining_seconds}秒, 状态: {current_state}")
+                    return total_seconds, remaining_seconds, current_activity_id, current_state
             
-            # 如果当前时间超过节点结束时间，返回None
+            # 如果当前时间超过节点结束时间
             elif current_time >= node_end_time:
-                logger.debug("当前时间超过节点结束时间")
+                logger.debug(f"当前时间 {current_time} 超过节点结束时间 {node_end_time}")
                 return None, None, None, None
             else:
                 # 在当前时间范围内，找到当前活动
-                for activity_id, duration in node_activities:
-                    start_time = activity_times[activity_id]['start']
-                    end_time = activity_times[activity_id]['end']
+                for activity_id, times in activity_times.items():
+                    start_time = times['start']
+                    end_time = times['end']
                     
+                    logger.debug(f"检查活动 {activity_id}: {start_time} <= {current_time} < {end_time}")
                     if start_time <= current_time < end_time:
                         current_activity_id = activity_id
-                        # 如果是课间活动，状态为0；如果是课程活动，状态为1
-                        current_state = 0 if activity_id.startswith('f') else 1
+                        current_state = times['activity_type']  # 0=上课，1=课间
+                        logger.debug(f"找到当前活动: {current_activity_id}, 状态: {current_state}")
                         break
             
             if not current_activity_id:
@@ -836,12 +1649,12 @@ class Plugin(PluginBase):
             
             total_seconds = activity_times[current_activity_id]['duration_seconds']
             
-            ### logger.debug(f"当前活动: {current_activity_id}, 总时长: {total_seconds}秒, 剩余时间: {remaining_seconds}秒, 状态: {current_state}")
+            logger.debug(f"当前活动: {current_activity_id}, 总时长: {total_seconds}秒, 剩余时间: {remaining_seconds}秒, 状态: {current_state}")
             
             return total_seconds, remaining_seconds, current_activity_id, current_state
             
         except Exception as e:
-            logger.error(f"获取当前活动时间信息失败: {e}")
+            logger.error(f"获取当前活动时间信息失败: {e}", exc_info=True)
             return None, None, None, None
     
     def create_lesson_frame(self, abbreviation, course_id):
@@ -938,30 +1751,38 @@ class Plugin(PluginBase):
             elif item.spacerItem():
                 self.lesson_layout.removeItem(item)
         
-    def display_lessons(self):
-        """显示课程"""
+    def display_lessons(self, lessons_dict=None):
+        """显示课程（适配新版本Current_Lessons元组键）"""
         try:
             if not self.lesson_layout:
                 logger.error("课程布局未初始化")
                 return
                 
-            # 获取当前课程
-            current_lessons = self.app_contexts.get('Current_Lessons', {})
-            if not current_lessons:
+            # 获取课程数据
+            if lessons_dict is None:
+                lessons_dict = self.app_contexts.get('Current_Lessons', {})
+            
+            if not lessons_dict:
                 logger.info("没有找到当前课程数据")
+                # 清空课程框架字典和状态
+                self.course_frames.clear()
+                self.current_course_id = None
+                self.previous_highlight_id = None
+                self.current_state = None
+                self.clear_lesson_layout()
                 return
                 
-            ### logger.info(f"获取到课程数据: {current_lessons}")
+            logger.info(f"获取到课程数据: {lessons_dict}")
             
             # 清空课程框架字典和状态
             self.course_frames.clear()
             self.current_course_id = None
             self.previous_highlight_id = None
-            self.current_state = None  # 重置状态
+            self.current_state = None
             
             # 按时间段分组
-            lesson_groups = self.group_lessons_by_period(current_lessons)
-            ### logger.info(f"分组后的课程: {lesson_groups}")
+            lesson_groups = self.group_lessons_by_period(lessons_dict)
+            logger.info(f"分组后的课程: {lesson_groups}")
             
             # 清空现有布局
             self.clear_lesson_layout()
@@ -969,8 +1790,15 @@ class Plugin(PluginBase):
             # 动态创建课程显示
             group_count = len(lesson_groups)
             for i, (period, lessons) in enumerate(lesson_groups.items()):
-                # 获取这个时间段的所有课程ID
-                period_course_ids = [key for key in current_lessons.keys() if key[1] == period]
+                # 获取这个时间段的所有课程ID（适配元组和字符串格式）
+                period_course_ids = []
+                for key in lessons_dict.keys():
+                    if isinstance(key, tuple) and len(key) >= 3:
+                        if str(key[1]) == period:
+                            period_course_ids.append(key)
+                    elif isinstance(key, str) and len(key) >= 2:
+                        if key[1] == period:
+                            period_course_ids.append(key)
                 
                 # 添加本组的课程
                 for j, (course_id, abbreviation) in enumerate(zip(period_course_ids, lessons)):
@@ -979,11 +1807,11 @@ class Plugin(PluginBase):
                         self.lesson_layout.addWidget(frame)
                         # 存储课程框架引用
                         self.course_frames[course_id] = frame
-                        ### logger.debug(f"添加课程框架: {abbreviation} (ID: {course_id})")
+                        logger.debug(f"添加课程框架: {abbreviation} (ID: {course_id})")
                     
                     # 课程之间添加6px间隔（最后一个课程后不添加）
                     if j < len(lessons) - 1:
-                        spacer = self.create_spacer(6)  # 今日课程使用6px间隔
+                        spacer = self.create_spacer(6)
                         if spacer:
                             self.lesson_layout.addItem(spacer)
                 
@@ -1008,6 +1836,11 @@ class Plugin(PluginBase):
             
         except Exception as e:
             logger.error(f"显示课程失败: {e}")
+            # 出错时清空布局
+            try:
+                self.clear_lesson_layout()
+            except:
+                pass
 
     def update_current_course_highlight(self):
         """更新当前课程高亮显示"""
@@ -1016,14 +1849,18 @@ class Plugin(PluginBase):
             current_course_id = self.calculate_current_course()
             current_state = self.app_contexts.get('State', 0)
             
+            logger.debug(f"更新课程高亮 - 当前课程ID: {current_course_id}, 当前状态: {current_state}")
+            
+            # 如果当前课程ID为None，清除所有高亮
+            if current_course_id is None:
+                logger.debug("当前课程ID为None，清除所有高亮")
+                self.clear_main_ui_highlight()
+                return
+                
             # 如果当前课程和状态都没有变化，直接返回
             if (current_course_id == self.current_course_id and 
                 current_state == self.current_state):
-                return
-                
-            # 如果当前课程ID为None，清除所有高亮
-            if current_course_id is None:
-                self.clear_main_ui_highlight()
+                logger.debug("课程和状态未变化，跳过更新")
                 return
                 
             # 移除之前的高亮
@@ -1049,7 +1886,7 @@ class Plugin(PluginBase):
                 else:  # 上课
                     bg_color = "#e98f83"
                     
-                current_frame.setStyleSheet(f"border-radius: 20px; background-color: {bg_color};")
+                current_frame.setStyleSheet(f"border-radius: 20px; background: qlineargradient(x1:-0.2, y1:-0.2, x2:0.8, y2:0.8,stop:0 #b4dfff,stop:1 {bg_color})")
                 
                 # 设置标签颜色为白色
                 label = current_frame.findChild(QLabel)
@@ -1061,7 +1898,10 @@ class Plugin(PluginBase):
                 self.current_course_id = current_course_id
                 self.current_state = current_state
                 
-                logger.debug(f"更新课程高亮: {current_course_id}, 状态: {current_state}, 颜色: {bg_color}")
+                logger.debug(f"更新课程高亮成功: {current_course_id}, 状态: {current_state}, 颜色: {bg_color}")
+            else:
+                logger.warning(f"课程ID {current_course_id} 不在课程框架字典中")
+                logger.debug(f"可用的课程框架ID: {list(self.course_frames.keys())}")
             
         except Exception as e:
             logger.error(f"更新课程高亮失败: {e}")
@@ -1162,6 +2002,7 @@ class Plugin(PluginBase):
         else:
             logger.error("UI未初始化，无法启动插件")
         
+    
     def stop(self):
         """停止插件"""
         try:
@@ -1191,27 +2032,10 @@ class Plugin(PluginBase):
                 except:
                     pass
                 
-            # 停止进度条动画
-            if self.blackboard_progress_animation:
-                self.blackboard_progress_animation.stop()
-                self.blackboard_progress_animation.deleteLater()
-                self.blackboard_progress_animation = None
-                
-            if self.whiteboard_progress_animation:
-                self.whiteboard_progress_animation.stop()
-                self.whiteboard_progress_animation.deleteLater()
-                self.whiteboard_progress_animation = None
-                
-            # 关闭熄屏模式
-            if self.is_blackboard_mode and self.blackboard_widget:
-                self.blackboard_widget.close()
-                self.blackboard_widget.deleteLater()
-
-            # 关闭白板模式
-            if self.is_whiteboard_mode and self.whiteboard_widget:
-                self.whiteboard_widget.close()
-                self.whiteboard_widget.deleteLater()
-
+            # 关闭特殊模式
+            if self.current_special_mode:
+                self.close_special_mode()
+            
             # 关闭提示窗口和相关动画
             self.close_tip_window()
             
@@ -1246,6 +2070,19 @@ class Plugin(PluginBase):
         # 更新应用上下文
         self.app_contexts = app_context
         
+        # 打印关键上下文信息用于调试
+        logger.debug(f"Current_Time: {self.app_contexts.get('Current_Time')}")
+        logger.debug(f"Current_Part: {self.app_contexts.get('Current_Part')}")
+        logger.debug(f"State: {self.app_contexts.get('State')}")
+        logger.debug(f"Current_Lessons: {self.app_contexts.get('Current_Lessons')}")
+        
+        # 转换时间线数据格式（如果需要）
+        timeline_data = self.app_contexts.get('Timeline_Data')
+        if timeline_data is not None:
+            converted_timeline = self.convert_timeline_data(timeline_data)
+            # 更新应用上下文中的时间线数据
+            self.app_contexts['Timeline_Data'] = converted_timeline
+        
         # 如果初始小组件检查还没完成，先进行检查
         if not self.initial_widget_check_done:
             self.check_initial_widgets_state()
@@ -1261,7 +2098,10 @@ class Plugin(PluginBase):
         # 如果UI未初始化，尝试重新初始化
         if not self.ui_initialized:
             logger.warning("UI未初始化，尝试重新初始化")
-            was_initialized_before = False  # 记录之前是否已经初始化过
+            
+            # 重新加载自动化设置
+            self.load_automation_settings()
+            
             self.init_ui()
             if not self.ui_initialized:
                 logger.error("UI重新初始化失败，跳过更新")
@@ -1313,18 +2153,15 @@ class Plugin(PluginBase):
         # 更新当前课程高亮 - 这里会自动处理错误情况（只在显示今日课程时）
         if not self.showing_tomorrow_courses:
             self.update_current_course_highlight()
-        
-        # 更新熄屏模式当前课程高亮
-        self.update_blackboard_current_course_highlight()
 
-        # 更新熄屏模式倒计时
-        self.update_blackboard_countdown()
+        # 更新特殊模式当前课程高亮
+        self.update_special_mode_current_course_highlight()
 
-        # 更新白板模式当前课程高亮
-        self.update_whiteboard_current_course_highlight()
+        # 更新特殊模式倒计时
+        self.update_special_mode_countdown()
 
-        # 更新白板模式倒计时
-        self.update_whiteboard_countdown()
+        # 更新特殊模式倒计日
+        self.update_special_mode_countdown_day()
         
         # 处理自动化功能
         self.handle_automation()
@@ -1367,6 +2204,104 @@ class Plugin(PluginBase):
             logger.error(f"检查初始小组件状态失败: {e}")
             self.has_valid_widgets = False
             self.initial_widget_check_done = True
+
+    def convert_timeline_data(self, timeline_data):
+        """转换时间线数据格式：旧版本字典 -> 新版本列表"""
+        try:
+            # 如果已经是列表格式，直接返回（但要确保格式正确）
+            if isinstance(timeline_data, list):
+                # 确保列表中的每个元素都是正确的格式
+                valid_timeline = []
+                for item in timeline_data:
+                    if isinstance(item, list) and len(item) >= 4:
+                        # 确保duration是字符串
+                        if not isinstance(item[3], str):
+                            item[3] = str(item[3])
+                        valid_timeline.append(item)
+                    else:
+                        logger.warning(f"跳过无效的时间线数据项: {item}")
+                logger.debug(f"时间线数据已经是列表格式，共 {len(valid_timeline)} 个有效活动")
+                return valid_timeline
+                
+            # 如果是字典格式（旧版本），转换为列表格式（新版本）
+            if isinstance(timeline_data, dict):
+                logger.info("检测到旧版本时间线数据，开始转换")
+                new_timeline = []
+                
+                for key, duration in timeline_data.items():
+                    if not key or len(key) < 3:
+                        continue
+                        
+                    # 解析旧版本键：例如 'a01' 或 'f11'
+                    # 第一个字符：a=上课(0), f=课间(1)
+                    activity_type = 0 if key[0] == 'a' else 1
+                    
+                    # 第二个字符：节点编号
+                    if len(key) >= 2:
+                        node_num = key[1]
+                    else:
+                        node_num = '0'
+                    
+                    # 剩余部分：活动编号
+                    activity_num_str = key[2:] if len(key) > 2 else '0'
+                    try:
+                        activity_num = int(activity_num_str)
+                    except ValueError:
+                        activity_num = 0
+                    
+                    # 添加到新格式列表
+                    new_timeline.append([activity_type, node_num, activity_num, str(duration)])
+                
+                # 按照节点和活动编号排序
+                def sort_key(item):
+                    # 先按节点编号，再按活动编号
+                    try:
+                        node_num = int(item[1]) if item[1].isdigit() else ord(item[1])
+                    except:
+                        node_num = 0
+                    return (node_num, item[2])
+                
+                new_timeline.sort(key=sort_key)
+                logger.info(f"时间线数据转换完成：{len(new_timeline)} 个活动")
+                return new_timeline
+                
+            # 如果timeline_data是None，返回空列表
+            if timeline_data is None:
+                logger.debug("时间线数据为None，返回空列表")
+                return []
+                
+            logger.warning(f"未知的时间线数据类型: {type(timeline_data)}，值: {timeline_data}")
+            return []
+            
+        except Exception as e:
+            logger.error(f"转换时间线数据失败: {e}")
+            return []
+
+    def get_activity_id(self, activity):
+        """根据活动数据生成活动ID（兼容新旧版本和多位数编号）"""
+        try:
+            if isinstance(activity, list) and len(activity) >= 4:
+                # 新版本格式：[activity_type, node_num, activity_num, duration]
+                activity_type, node_num, activity_num, duration = activity
+                activity_type_char = 'a' if activity_type == 0 else 'f'
+                
+                # 将活动编号转换为字符串
+                activity_num_str = str(activity_num)
+                # 对于旧版本兼容：如果活动编号是1-9，保持2位数字格式（如01）
+                # 对于多位数，直接使用原数字
+                if activity_num < 10:
+                    activity_num_str = f"{activity_num:02d}"
+                
+                return f"{activity_type_char}{node_num}{activity_num_str}"
+            elif isinstance(activity, str):
+                # 已经是活动ID格式
+                return activity
+            else:
+                logger.warning(f"无法生成活动ID，未知的活动格式: {activity}")
+                return None
+        except Exception as e:
+            logger.error(f"生成活动ID失败: {e}")
+            return None
 
     def should_show_tomorrow_course(self):
         """判断是否应该显示明日课程"""
@@ -1423,13 +2358,16 @@ class Plugin(PluginBase):
             return False
 
     def calculate_today_course_end_time(self):
-        """计算今日课程结束时间"""
+        """计算今日课程结束时间（适配新版本时间线数据）"""
         try:
             # 获取时间线数据
-            timeline_data = self.app_contexts.get('Timeline_Data', {})
+            timeline_data = self.app_contexts.get('Timeline_Data', [])
             if not timeline_data:
                 logger.warning("未获取到时间线数据")
                 return None
+            
+            # 转换时间线数据格式
+            timeline_data = self.convert_timeline_data(timeline_data)
             
             # 获取节点开始时间
             parts_start_time = self.app_contexts.get('Parts_Start_Time', [])
@@ -1443,27 +2381,22 @@ class Plugin(PluginBase):
             
             # 获取最后一个节点的所有活动
             last_part_activities = []
-            for key, duration in timeline_data.items():
-                if len(key) >= 2 and key[1] == str(last_part_index):
-                    last_part_activities.append((key, int(duration)))
+            for activity in timeline_data:
+                if len(activity) >= 4 and activity[1] == str(last_part_index):
+                    last_part_activities.append(activity)
             
             if not last_part_activities:
                 logger.warning(f"未找到最后一个节点 {last_part_index} 的活动数据")
                 return None
             
-            # 按照正确的顺序排序
-            def activity_sort_key(item):
-                activity_id = item[0]
-                activity_number = activity_id[2] if len(activity_id) >= 3 else '0'
-                activity_type = activity_id[0]
-                return (int(activity_number) if activity_number.isdigit() else 0, activity_type)
-            
-            last_part_activities.sort(key=activity_sort_key)
+            # 按照活动编号排序
+            last_part_activities.sort(key=lambda x: x[2])
             
             # 计算最后一个节点的结束时间
             current_time = last_part_start_time
-            for activity_id, duration in last_part_activities:
-                current_time += timedelta(minutes=duration)
+            for activity in last_part_activities:
+                activity_type, node_num, activity_num, duration = activity
+                current_time += timedelta(minutes=int(duration))
             
             # 返回结束时间（只保留时间部分）
             return current_time.time()
@@ -1488,7 +2421,7 @@ class Plugin(PluginBase):
         try:
             # 获取学期起始日期
             base_directory = self.app_contexts.get('Base_Directory', '.')
-            config_path = os.path.join(base_directory, "config.ini")
+            config_path = os.path.join(base_directory, "config", "config.ini")
             
             if not os.path.exists(config_path):
                 logger.warning(f"config.ini文件不存在: {config_path}")
@@ -1520,12 +2453,39 @@ class Plugin(PluginBase):
             logger.error(f"计算明天单双周失败: {e}")
             return 'odd'  # 默认单周
 
-    def get_tomorrow_courses(self):
-        """获取明日课程数据"""
+    def get_enable_alt_schedule(self):
+        """读取config.ini中的enable_alt_schedule配置"""
         try:
-            # 获取明天的周次和单双周
+            base_directory = self.app_contexts.get('Base_Directory', '.')
+            config_path = os.path.join(base_directory, "config", "config.ini")
+            
+            if not os.path.exists(config_path):
+                logger.warning(f"config.ini文件不存在: {config_path}")
+                return False  # 默认不使用单双周
+                
+            config = configparser.ConfigParser()
+            config.read(config_path, encoding='utf-8')
+            
+            if not config.has_section('General'):
+                logger.warning("config.ini中没有[General]部分")
+                return False
+                
+            enable_alt_schedule = config.get('General', 'enable_alt_schedule', fallback='0')
+            logger.info(f"读取enable_alt_schedule配置: {enable_alt_schedule}")
+            return enable_alt_schedule == '1'
+            
+        except Exception as e:
+            logger.error(f"读取enable_alt_schedule配置失败: {e}")
+            return False
+
+    def get_tomorrow_courses(self):
+        """获取明日课程数据（优化单双周数据获取逻辑）"""
+        try:
+            # 获取明天的周次
             tomorrow_weekday = self.calculate_tomorrow_weekday()
-            tomorrow_parity = self.calculate_tomorrow_parity()
+            
+            # 读取配置，判断是否启用单双周
+            enable_alt_schedule = self.get_enable_alt_schedule()
             
             # 获取课程数据
             loaded_data = self.app_contexts.get('Loaded_Data', {})
@@ -1533,59 +2493,105 @@ class Plugin(PluginBase):
                 logger.warning("未获取到课程数据")
                 return {}
             
-            # 获取课程表
-            schedule_key = 'schedule_even' if tomorrow_parity == 'even' else 'schedule'
-            schedule = loaded_data.get(schedule_key, {})
+            logger.debug(f"明日周次: {tomorrow_weekday}, 启用单双周: {enable_alt_schedule}")
+            
+            # 如果启用单双周，计算明天的单双周
+            if enable_alt_schedule:
+                tomorrow_parity = self.calculate_tomorrow_parity()
+                logger.info(f"启用单双周，明天是{'双周' if tomorrow_parity == 'even' else '单周'}")
+                
+                # 根据单双周选择课程表
+                schedule_key = 'schedule_even' if tomorrow_parity == 'even' else 'schedule'
+                timeline_key = 'timeline_even' if tomorrow_parity == 'even' else 'timeline'
+            else:
+                # 不启用单双周，只使用单周数据
+                logger.info("不启用单双周，使用单周数据")
+                schedule_key = 'schedule'
+                timeline_key = 'timeline'
+                tomorrow_parity = 'odd'  # 默认单周
             
             # 获取对应周次的课程列表
+            schedule = loaded_data.get(schedule_key, {})
             tomorrow_courses_list = schedule.get(str(tomorrow_weekday), [])
+            
             if not tomorrow_courses_list:
-                logger.warning(f"未找到周次 {tomorrow_weekday} 的课程数据")
+                logger.warning(f"未找到周次 {tomorrow_weekday} 的课程数据 (schedule_key: {schedule_key})")
                 return {}
             
-            # 获取时间线数据
-            timeline = loaded_data.get('timeline', {})
-            tomorrow_timeline = timeline.get(str(tomorrow_weekday), {})
-            if not tomorrow_timeline:
-                # 使用默认时间线
-                tomorrow_timeline = timeline.get('default', {})
+            logger.debug(f"找到明日课程列表: {tomorrow_courses_list}")
             
-            # 提取课程活动（以'a'开头的键）
+            # 获取时间线数据（优化获取逻辑）
+            raw_timeline = loaded_data.get(timeline_key, {})
+            
+            # 优先获取对应周次的时间线
+            tomorrow_raw_timeline = raw_timeline.get(str(tomorrow_weekday))
+            
+            # 如果对应周次时间线为空，则获取当前单双周的default时间线
+            if not tomorrow_raw_timeline:
+                tomorrow_raw_timeline = raw_timeline.get('default', [])
+                logger.debug(f"对应周次时间线为空，使用{timeline_key}的default时间线")
+            
+            # 如果是双周且default时间线仍为空，则使用单周的default时间线
+            if tomorrow_parity == 'even' and not tomorrow_raw_timeline:
+                timeline_single = loaded_data.get('timeline', {})
+                tomorrow_raw_timeline = timeline_single.get('default', [])
+                logger.debug(f"双周default时间线为空，使用单周default时间线")
+            
+            # 转换时间线数据格式
+            timeline_data = self.convert_timeline_data(tomorrow_raw_timeline)
+            
+            if not timeline_data:
+                logger.warning(f"未获取到有效的时间线数据 (timeline_key: {timeline_key})")
+                return {}
+            
+            logger.debug(f"获取到时间线数据: {timeline_data}")
+            
+            # 提取课程活动（activity_type为0）
             course_activities = []
-            for key in sorted(tomorrow_timeline.keys()):
-                if key.startswith('a'):
-                    course_activities.append(key)
+            for activity in timeline_data:
+                if isinstance(activity, list) and len(activity) >= 4:
+                    if activity[0] == 0:  # 课程活动
+                        course_activities.append(activity)
             
-            # 计算每个节点的课程数量
-            node_course_counts = {}
-            for activity in course_activities:
-                if len(activity) >= 2:
-                    node = activity[1]
-                    node_course_counts[node] = node_course_counts.get(node, 0) + 1
+            # 按照节点编号和活动编号排序
+            def activity_sort_key(item):
+                # 先按节点编号，再按活动编号
+                try:
+                    node_num = int(item[1]) if item[1].isdigit() else ord(item[1])
+                except:
+                    node_num = 0
+                return (node_num, item[2])
+            
+            course_activities.sort(key=activity_sort_key)
+            
+            logger.debug(f"提取到的课程活动: {course_activities}")
             
             # 构建课程字典
             tomorrow_courses = {}
             course_index = 0
             
-            for node in sorted(node_course_counts.keys()):
-                node_course_count = node_course_counts[node]
-                for i in range(node_course_count):
-                    if course_index < len(tomorrow_courses_list):
-                        course_name = tomorrow_courses_list[course_index]
-                        # 生成课程ID（格式：a{节点序号}{课程序号}）
-                        course_id = f"a{node}{i+1:02d}" if i+1 < 10 else f"a{node}{i+1}"
-                        tomorrow_courses[course_id] = course_name
-                        course_index += 1
-                    else:
-                        # 课程列表不足，用"暂无课程"补全
-                        course_id = f"a{node}{i+1:02d}" if i+1 < 10 else f"a{node}{i+1}"
-                        tomorrow_courses[course_id] = "暂无课程"
+            for activity in course_activities:
+                activity_id = self.get_activity_id(activity)
+                if not activity_id:
+                    continue
+                    
+                if course_index < len(tomorrow_courses_list):
+                    course_name = tomorrow_courses_list[course_index]
+                    tomorrow_courses[activity_id] = course_name
+                    course_index += 1
+                else:
+                    # 课程列表不足，用"未添加"补全
+                    tomorrow_courses[activity_id] = "未添加"
+            
+            # 检查课程数量是否匹配
+            if len(tomorrow_courses) != len(tomorrow_courses_list):
+                logger.warning(f"课程数量不匹配: 时间线活动数={len(course_activities)}, 课程列表数={len(tomorrow_courses_list)}")
             
             logger.info(f"获取到明日课程: {tomorrow_courses}")
             return tomorrow_courses
             
         except Exception as e:
-            logger.error(f"获取明日课程失败: {e}")
+            logger.error(f"获取明日课程失败: {e}", exc_info=True)
             return {}
 
     def show_tomorrow_courses(self):
@@ -1837,13 +2843,11 @@ class Plugin(PluginBase):
             return
             
         if self.automation_triggered:
-            ## logger.debug(f"课程 '{self.current_lesson_name}' 的自动化已触发，跳过检查")
             return
             
         # 获取当前课程的设置
         lesson_settings = self.automation_settings.get(self.current_lesson_name)
         if not lesson_settings:
-            ## logger.debug(f"课程 '{self.current_lesson_name}' 无自动化设置")
             return
             
         trigger_time = lesson_settings.get('time', 0)
@@ -1857,13 +2861,13 @@ class Plugin(PluginBase):
         current_mode = self.get_current_mode()
         if current_mode == target_mode:
             logger.debug(f"当前已经处于目标模式 '{target_mode}'，跳过自动化触发")
-            self.automation_triggered = True  # 标记为已触发，避免重复检查
+            self.automation_triggered = True
             return
         
         # 获取当前活动时间信息
         time_info = self.get_current_activity_time_info()
-        if not time_info:
-            logger.debug("无法获取当前活动时间信息，跳过自动化检查")
+        if not time_info or time_info[0] is None or time_info[1] is None:
+            logger.debug("无法获取有效的活动时间信息，跳过自动化检查")
             return
             
         total_seconds, remaining_seconds, activity_id, state = time_info
@@ -1886,9 +2890,11 @@ class Plugin(PluginBase):
                 should_trigger = True
                 trigger_reason = f"持续时间达到 {trigger_time} 秒 (实际: {elapsed_time:.1f} 秒)"
         else:  # 负数：剩余时间
-            if remaining_seconds <= abs(trigger_time):
-                should_trigger = True
-                trigger_reason = f"剩余时间达到 {abs(trigger_time)} 秒 (实际: {remaining_seconds} 秒)"
+            # 确保剩余时间不为None且大于0
+            if remaining_seconds is not None and remaining_seconds > 0:
+                if remaining_seconds <= abs(trigger_time):
+                    should_trigger = True
+                    trigger_reason = f"剩余时间达到 {abs(trigger_time)} 秒 (实际: {remaining_seconds} 秒)"
         
         logger.debug(f"自动化触发检查结果: {should_trigger} - {trigger_reason}")
         
@@ -2100,18 +3106,18 @@ class Plugin(PluginBase):
             
             logger.info("提示窗口淡入动画已启动")
             
-            # 启动实时监测定时器（每20毫秒检查一次用户操作）
+            # 启动实时监测定时器（每10毫秒检查一次用户操作）
             self.realtime_check_timer = QTimer()
             self.realtime_check_timer.timeout.connect(self.check_realtime_user_activity)
-            self.realtime_check_timer.start(20)  # 每20毫秒检查一次
+            self.realtime_check_timer.start(10)  # 每10毫秒检查一次
             
             # 设置5秒计时器（备用，用于超时处理）
             self.tip_timer = QTimer()
             self.tip_timer.setSingleShot(True)
             self.tip_timer.timeout.connect(self.on_tip_timeout)
-            self.tip_timer.start(5000)  # 5秒
+            self.tip_timer.start(7000)  # 7秒
             
-            logger.info("已启动实时监测计时器和5秒备用计时器")
+            logger.info("已启动实时监测计时器和7秒备用计时器")
             
         except Exception as e:
             logger.error(f"显示提示窗口失败: {e}", exc_info=True)
@@ -2150,7 +3156,7 @@ class Plugin(PluginBase):
             self.close_tip_window()
             
             # 短暂延迟后显示打断成功提示
-            QTimer.singleShot(300, self.show_interruption_success)
+            QTimer.singleShot(60, self.show_interruption_success)
             
         except Exception as e:
             logger.error(f"处理立即打断失败: {e}")
@@ -2658,7 +3664,7 @@ class Plugin(PluginBase):
         try:
             logger.info("白板模式按钮被点击")
             # 切换到白板模式
-            self.show_whiteboard()
+            self.show_special_mode('whiteboard')
             
         except Exception as e:
             logger.error(f"处理白板模式按钮点击事件失败: {e}")
@@ -2668,773 +3674,176 @@ class Plugin(PluginBase):
         try:
             logger.info("熄屏模式按钮被点击")
             # 切换到熄屏模式
-            self.show_blackboard()
+            self.show_special_mode('blackboard')
             
         except Exception as e:
             logger.error(f"处理熄屏模式按钮点击事件失败: {e}")
-    
-    def init_blackboard_ui(self):
-        """初始化熄屏模式UI"""
-        try:
-            from PyQt5 import uic
-            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
-            
-            # 获取UI文件路径
-            base_directory = self.app_contexts.get('Base_Directory', '.')
-            ui_file_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "ui", "blackboard.ui")
-            
-            logger.info(f"尝试加载熄屏模式UI文件: {ui_file_path}")
-            
-            if not os.path.exists(ui_file_path):
-                logger.error(f"熄屏模式UI文件不存在: {ui_file_path}")
-                return False
-                
-            # 如果之前已经有熄屏模式UI部件，先清理
-            if self.blackboard_widget:
-                self.blackboard_widget.deleteLater()
-                self.blackboard_widget = None
-                self.blackboard_lesson_layout = None
-                self.blackboard_course_frames.clear()
-                
-            # 加载UI文件
-            self.blackboard_widget = uic.loadUi(ui_file_path)
-            
-            if self.blackboard_widget is None:
-                logger.error("熄屏模式UI文件加载失败，返回None")
-                return False
-                
-            logger.info("熄屏模式UI文件加载成功")
-            
-            # 设置窗口属性 - 覆盖任务栏全屏
-            self.blackboard_widget.setWindowFlags(
-                Qt.FramelessWindowHint | 
-                Qt.WindowStaysOnTopHint |  # 置顶显示
-                Qt.Tool |
-                Qt.CustomizeWindowHint  # 自定义窗口，避免系统边框
-            )
-            self.blackboard_widget.setAttribute(Qt.WA_TranslucentBackground)
-            self.blackboard_widget.setAttribute(Qt.WA_ShowWithoutActivating)
-            
-            # 获取课程布局
-            self.blackboard_lesson_layout = self.blackboard_widget.findChild(QHBoxLayout, "horizontalLayout_lesson_list")
-            if not self.blackboard_lesson_layout:
-                logger.error("未找到熄屏模式课程布局")
-                return False
-                
-            logger.info("找到熄屏模式课程布局")
-            
-            # 获取关闭按钮并设置事件
-            pushButton_close = self.blackboard_widget.findChild(QPushButton, "pushButton_close")
-            if pushButton_close:
-                pushButton_close.clicked.connect(self.close_blackboard)
-                logger.debug("设置熄屏模式关闭按钮事件")
-            
-            # 获取白板模式按钮并设置事件
-            pushButton_light = self.blackboard_widget.findChild(QPushButton, "pushButton_light")
-            if pushButton_light:
-                pushButton_light.clicked.connect(self.switch_to_whiteboard_from_blackboard)
-                logger.debug("设置熄屏模式切换到白板模式按钮事件")
-            
-            # 设置关闭按钮样式（深色模式样式）
-            self.setup_blackboard_button_styles()
-            
-            # 显示课程
-            self.display_blackboard_lessons()
-            
-            # 初始化进度条动画
-            self.init_blackboard_progress_animation()
-    
-            # 初始化鼠标检测
-            self.init_mouse_detection()
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"初始化熄屏模式UI失败: {e}")
-            return False
 
-    def init_whiteboard_ui(self):
-        """初始化白板模式UI"""
-        try:
-            from PyQt5 import uic
-            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
-            
-            # 获取UI文件路径
-            base_directory = self.app_contexts.get('Base_Directory', '.')
-            ui_file_path = os.path.join(base_directory, "plugins", "cw-lessons-displayer", "ui", "whiteboard.ui")
-            
-            logger.info(f"尝试加载白板模式UI文件: {ui_file_path}")
-            
-            if not os.path.exists(ui_file_path):
-                logger.error(f"白板模式UI文件不存在: {ui_file_path}")
-                return False
-                
-            # 如果之前已经有白板模式UI部件，先清理
-            if self.whiteboard_widget:
-                self.whiteboard_widget.deleteLater()
-                self.whiteboard_widget = None
-                self.whiteboard_lesson_layout = None
-                self.whiteboard_course_frames.clear()
-                
-            # 加载UI文件
-            self.whiteboard_widget = uic.loadUi(ui_file_path)
-            
-            if self.whiteboard_widget is None:
-                logger.error("白板模式UI文件加载失败，返回None")
-                return False
-                
-            logger.info("白板模式UI文件加载成功")
-            
-            # 设置窗口属性 - 覆盖任务栏全屏
-            self.whiteboard_widget.setWindowFlags(
-                Qt.FramelessWindowHint | 
-                Qt.WindowStaysOnTopHint |  # 置顶显示
-                Qt.Tool |
-                Qt.CustomizeWindowHint  # 自定义窗口，避免系统边框
-            )
-            self.whiteboard_widget.setAttribute(Qt.WA_TranslucentBackground)
-            self.whiteboard_widget.setAttribute(Qt.WA_ShowWithoutActivating)
-            
-            # 获取课程布局
-            self.whiteboard_lesson_layout = self.whiteboard_widget.findChild(QHBoxLayout, "horizontalLayout_lesson_list")
-            if not self.whiteboard_lesson_layout:
-                logger.error("未找到白板模式课程布局")
-                return False
-                
-            logger.info("找到白板模式课程布局")
-            
-            # 获取关闭按钮并设置事件
-            pushButton_close = self.whiteboard_widget.findChild(QPushButton, "pushButton_close")
-            if pushButton_close:
-                pushButton_close.clicked.connect(self.close_whiteboard)
-                logger.debug("设置白板模式关闭按钮事件")
-            
-            # 获取熄屏模式按钮并设置事件
-            pushButton_dark = self.whiteboard_widget.findChild(QPushButton, "pushButton_dark")
-            if pushButton_dark:
-                pushButton_dark.clicked.connect(self.switch_to_blackboard_from_whiteboard)
-                logger.debug("设置白板模式切换到熄屏模式按钮事件")
-            
-            # 设置按钮样式（浅色模式样式）
-            self.setup_whiteboard_button_styles()
-            
-            # 显示课程
-            self.display_whiteboard_lessons()
-            
-            # 初始化进度条动画
-            self.init_whiteboard_progress_animation()
-
-            # 初始化鼠标检测
-            self.init_mouse_detection()
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"初始化白板模式UI失败: {e}")
-            return False
-
-    def display_blackboard_lessons(self):
-        """显示熄屏模式课程"""
-        try:
-            if not self.blackboard_lesson_layout:
-                logger.error("熄屏模式课程布局未初始化")
-                return
-                
-            # 获取当前课程
-            current_lessons = self.app_contexts.get('Current_Lessons', {})
-            if not current_lessons:
-                logger.info("没有找到当前课程数据")
-                return
-                
-            logger.info(f"获取到熄屏模式课程数据: {current_lessons}")
-            
-            # 清空课程框架字典和状态
-            self.blackboard_course_frames.clear()
-            self.blackboard_current_course_id = None
-            self.blackboard_previous_highlight_id = None
-            self.blackboard_current_state = None
-            
-            # 按时间段分组
-            lesson_groups = self.group_lessons_by_period(current_lessons)
-            logger.info(f"熄屏模式分组后的课程: {lesson_groups}")
-            
-            # 清空现有布局
-            self.clear_blackboard_lesson_layout()
-            
-            # 动态创建课程显示
-            group_count = len(lesson_groups)
-            for i, (period, lessons) in enumerate(lesson_groups.items()):
-                # 获取这个时间段的所有课程ID
-                period_course_ids = [key for key in current_lessons.keys() if key[1] == period]
-                
-                # 添加本组的课程
-                for j, (course_id, abbreviation) in enumerate(zip(period_course_ids, lessons)):
-                    frame = self.create_blackboard_lesson_frame(abbreviation, course_id)
-                    if frame:
-                        self.blackboard_lesson_layout.addWidget(frame)
-                        # 存储课程框架引用
-                        self.blackboard_course_frames[course_id] = frame
-                        logger.debug(f"添加熄屏模式课程框架: {abbreviation} (ID: {course_id})")
-                    
-                    # 课程之间添加6px间隔（最后一个课程后不添加）
-                    if j < len(lessons) - 1:
-                        spacer = self.create_spacer(6)
-                        if spacer:
-                            self.blackboard_lesson_layout.addItem(spacer)
-                
-                # 组之间添加分隔线（最后一组后不添加）
-                if i < group_count - 1:
-                    # 添加10px间隔
-                    spacer_before = self.create_spacer(10)
-                    if spacer_before:
-                        self.blackboard_lesson_layout.addItem(spacer_before)
-                    
-                    # 添加分隔线
-                    divider = self.create_blackboard_divider()
-                    if divider:
-                        self.blackboard_lesson_layout.addWidget(divider)
-                    
-                    # 添加10px间隔
-                    spacer_after = self.create_spacer(10)
-                    if spacer_after:
-                        self.blackboard_lesson_layout.addItem(spacer_after)
-            
-            logger.info("熄屏模式课程显示更新完成")
-            
-        except Exception as e:
-            logger.error(f"显示熄屏模式课程失败: {e}")
-
-    def display_whiteboard_lessons(self):
-        """显示白板模式课程"""
-        try:
-            if not self.whiteboard_lesson_layout:
-                logger.error("白板模式课程布局未初始化")
-                return
-                
-            # 获取当前课程
-            current_lessons = self.app_contexts.get('Current_Lessons', {})
-            if not current_lessons:
-                logger.info("没有找到当前课程数据")
-                return
-                
-            logger.info(f"获取到白板模式课程数据: {current_lessons}")
-            
-            # 清空课程框架字典和状态
-            self.whiteboard_course_frames.clear()
-            self.whiteboard_current_course_id = None
-            self.whiteboard_previous_highlight_id = None
-            self.whiteboard_current_state = None
-            
-            # 按时间段分组
-            lesson_groups = self.group_lessons_by_period(current_lessons)
-            logger.info(f"白板模式分组后的课程: {lesson_groups}")
-            
-            # 清空现有布局
-            self.clear_whiteboard_lesson_layout()
-            
-            # 动态创建课程显示
-            group_count = len(lesson_groups)
-            for i, (period, lessons) in enumerate(lesson_groups.items()):
-                # 获取这个时间段的所有课程ID
-                period_course_ids = [key for key in current_lessons.keys() if key[1] == period]
-                
-                # 添加本组的课程
-                for j, (course_id, abbreviation) in enumerate(zip(period_course_ids, lessons)):
-                    frame = self.create_whiteboard_lesson_frame(abbreviation, course_id)
-                    if frame:
-                        self.whiteboard_lesson_layout.addWidget(frame)
-                        # 存储课程框架引用
-                        self.whiteboard_course_frames[course_id] = frame
-                        logger.debug(f"添加白板模式课程框架: {abbreviation} (ID: {course_id})")
-                    
-                    # 课程之间添加6px间隔（最后一个课程后不添加）
-                    if j < len(lessons) - 1:
-                        spacer = self.create_spacer(6)
-                        if spacer:
-                            self.whiteboard_lesson_layout.addItem(spacer)
-                
-                # 组之间添加分隔线（最后一组后不添加）
-                if i < group_count - 1:
-                    # 添加10px间隔
-                    spacer_before = self.create_spacer(10)
-                    if spacer_before:
-                        self.whiteboard_lesson_layout.addItem(spacer_before)
-                    
-                    # 添加分隔线
-                    divider = self.create_whiteboard_divider()
-                    if divider:
-                        self.whiteboard_lesson_layout.addWidget(divider)
-                    
-                    # 添加10px间隔
-                    spacer_after = self.create_spacer(10)
-                    if spacer_after:
-                        self.whiteboard_lesson_layout.addItem(spacer_after)
-            
-            logger.info("白板模式课程显示更新完成")
-            
-        except Exception as e:
-            logger.error(f"显示白板模式课程失败: {e}")
-
-    def create_blackboard_lesson_frame(self, abbreviation, course_id):
-        """创建熄屏模式课程显示框架"""
-        try:
-            # 创建框架
-            frame = QFrame()
-            frame.setObjectName(f"blackboard_frame_{course_id}")
-            frame.setMinimumSize(40, 40)
-            frame.setMaximumSize(16777215, 40)
-            frame.setStyleSheet("border-radius: 20px; background-color: none")
-            frame.setFrameShape(QFrame.StyledPanel)
-            frame.setFrameShadow(QFrame.Raised)
-            
-            # 创建布局
-            layout = QHBoxLayout(frame)
-            layout.setSpacing(0)
-            layout.setContentsMargins(6, 0, 6, 0)
-            
-            # 创建标签 - 使用深色模式样式（白色文字）
-            label = QLabel(abbreviation)
-            label.setObjectName(f"blackboard_label_{course_id}")
-            label.setFont(self.create_lesson_font())
-            label.setStyleSheet("border: none; color: rgb(255, 255, 255); font-weight: bold; background: none;")
-            label.setTextFormat(Qt.PlainText)
-            label.setAlignment(Qt.AlignLeading | Qt.AlignLeft | Qt.AlignVCenter)
-            
-            layout.addWidget(label)
-            
-            return frame
-            
-        except Exception as e:
-            logger.error(f"创建熄屏模式课程框架失败: {e}")
-            return None
-
-    def create_blackboard_divider(self):
-        """创建熄屏模式分隔线"""
-        try:
-            divider = QLabel("|")
-            divider.setFont(self.create_lesson_font())
-            divider.setStyleSheet("border: none; color: rgb(255, 255, 255); font-weight: bold; background: none;")
-            divider.setTextFormat(Qt.PlainText)
-            divider.setAlignment(Qt.AlignCenter)
-            return divider
-        except Exception as e:
-            logger.error(f"创建熄屏模式分隔线失败: {e}")
-            return None
-
-    def clear_blackboard_lesson_layout(self):
-        """清空熄屏模式课程布局"""
-        if not self.blackboard_lesson_layout:
-            return
-            
-        # 清空课程框架字典
-        self.blackboard_course_frames.clear()
-        
-        # 移除所有子项
-        while self.blackboard_lesson_layout.count():
-            item = self.blackboard_lesson_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-            elif item.spacerItem():
-                self.blackboard_lesson_layout.removeItem(item)
-
-    
-    def create_whiteboard_lesson_frame(self, abbreviation, course_id):
-        """创建白板模式课程显示框架"""
-        try:
-            # 创建框架
-            frame = QFrame()
-            frame.setObjectName(f"whiteboard_frame_{course_id}")
-            frame.setMinimumSize(40, 40)
-            frame.setMaximumSize(16777215, 40)
-            frame.setStyleSheet("border-radius: 20px; background-color: none")
-            frame.setFrameShape(QFrame.StyledPanel)
-            frame.setFrameShadow(QFrame.Raised)
-            
-            # 创建布局
-            layout = QHBoxLayout(frame)
-            layout.setSpacing(0)
-            layout.setContentsMargins(6, 0, 6, 0)
-            
-            # 创建标签 - 使用浅色模式样式（黑色文字）
-            label = QLabel(abbreviation)
-            label.setObjectName(f"whiteboard_label_{course_id}")
-            label.setFont(self.create_lesson_font())
-            label.setStyleSheet("border: none; color: rgb(0, 0, 0); font-weight: bold; background: none;")
-            label.setTextFormat(Qt.PlainText)
-            label.setAlignment(Qt.AlignLeading | Qt.AlignLeft | Qt.AlignVCenter)
-            
-            layout.addWidget(label)
-            
-            return frame
-            
-        except Exception as e:
-            logger.error(f"创建白板模式课程框架失败: {e}")
-            return None
-
-    def create_whiteboard_divider(self):
-        """创建白板模式分隔线"""
-        try:
-            divider = QLabel("|")
-            divider.setFont(self.create_lesson_font())
-            divider.setStyleSheet("border: none; color: rgb(0, 0, 0); font-weight: bold; background: none;")
-            divider.setTextFormat(Qt.PlainText)
-            divider.setAlignment(Qt.AlignCenter)
-            return divider
-        except Exception as e:
-            logger.error(f"创建白板模式分隔线失败: {e}")
-            return None
-
-    def clear_whiteboard_lesson_layout(self):
-        """清空白板模式课程布局"""
-        if not self.whiteboard_lesson_layout:
-            return
-            
-        # 清空课程框架字典
-        self.whiteboard_course_frames.clear()
-        
-        # 移除所有子项
-        while self.whiteboard_lesson_layout.count():
-            item = self.whiteboard_lesson_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-            elif item.spacerItem():
-                self.whiteboard_lesson_layout.removeItem(item)
-
-    def setup_blackboard_button_styles(self):
-        """设置熄屏模式按钮样式（深色模式样式）"""
-        try:
-            # 基础样式（深色模式）
-            base_style = """
-                QPushButton {
-                    background-color: rgba(255, 255, 255, 50);
-                    border: 1px solid;
-                    border-color: rgba(255, 255, 255, 45);
-                    border-top-color: rgba(255, 255, 255, 60);
-                    border-radius: 17px;
-                }
-            """
-            
-            # 悬停样式
-            hover_style = """
-                QPushButton:hover {
-                    background-color: rgba(255, 255, 255, 60);
-                }
-                QPushButton:pressed {
-                    background-color: rgba(255, 255, 255, 40);
-                    border-color: rgba(255, 255, 255, 25);
-                    border-top-color: rgba(255, 255, 255, 30);
-                }
-            """
-            
-            # 应用样式到关闭按钮
-            pushButton_close = self.blackboard_widget.findChild(QPushButton, "pushButton_close")
-            if pushButton_close:
-                pushButton_close.setStyleSheet(base_style + hover_style)
-                
-            # 应用样式到白板模式按钮
-            pushButton_light = self.blackboard_widget.findChild(QPushButton, "pushButton_light")
-            if pushButton_light:
-                pushButton_light.setStyleSheet(base_style + hover_style)
-                
-            logger.debug("设置熄屏模式按钮样式完成")
-            
-        except Exception as e:
-            logger.error(f"设置熄屏模式按钮样式失败: {e}")
-
-    def setup_whiteboard_button_styles(self):
-        """设置白板模式按钮样式（浅色模式样式）"""
-        try:
-            # 基础样式（浅色模式）
-            base_style = """
-                QPushButton {
-                    background-color: rgb(255, 255, 255);
-                    border: 1px solid;
-                    border-color: rgba(0, 0, 0, 20);
-                    border-bottom-color: rgba(0, 0, 0, 40);
-                    border-radius: 17px;
-                }
-            """
-            
-            # 悬停样式
-            hover_style = """
-                QPushButton:hover {
-                    background-color: rgba(250, 250, 250, 200);
-                    border-color: rgba(0, 0, 0, 25);
-                    border-bottom-color: rgba(0, 0, 0, 45);
-                }
-                QPushButton:pressed {
-                    background-color: rgba(240, 240, 240, 200);
-                    border-color: rgba(0, 0, 0, 25);
-                    border-bottom-color: rgba(0, 0, 0, 45);
-                }
-            """
-            
-            # 应用样式到关闭按钮
-            pushButton_close = self.whiteboard_widget.findChild(QPushButton, "pushButton_close")
-            if pushButton_close:
-                pushButton_close.setStyleSheet(base_style + hover_style)
-                
-            # 应用样式到熄屏模式按钮
-            pushButton_dark = self.whiteboard_widget.findChild(QPushButton, "pushButton_dark")
-            if pushButton_dark:
-                pushButton_dark.setStyleSheet(base_style + hover_style)
-                
-            logger.debug("设置白板模式按钮样式完成")
-            
-        except Exception as e:
-            logger.error(f"设置白板模式按钮样式失败: {e}")
-
-    def show_blackboard(self):
-        """显示熄屏模式（带淡入动画，覆盖任务栏全屏）"""
+    def show_special_mode(self, mode):
+        """显示特殊模式（熄屏或白板）"""
         try:
             from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
             
-            # 如果已经在熄屏模式，直接返回
-            if self.is_blackboard_mode:
-                return
+            logger.info(f"开启{self.get_mode_name(mode)}模式")
+            
+            if not self.special_mode_manager:
+                # 创建新的特殊模式管理器
+                self.special_mode_manager = SpecialModeManager(self)
                 
-            logger.info("开启熄屏模式")
-            
-            # 初始化熄屏模式UI
-            if not self.init_blackboard_ui():
-                logger.error("熄屏模式UI初始化失败")
-                return
+                # 初始化UI
+                if not self.special_mode_manager.init_ui():
+                    logger.error(f"{self.get_mode_name(mode)}模式UI初始化失败")
+                    self.special_mode_manager = None
+                    return
+                    
+                # 获取屏幕信息，包括任务栏区域
+                screen = QApplication.primaryScreen()
+                screen_geometry = screen.geometry()  # 屏幕总几何信息（包括任务栏）
                 
-            # 获取屏幕信息，包括任务栏区域
-            screen = QApplication.primaryScreen()
-            screen_geometry = screen.geometry()  # 屏幕总几何信息（包括任务栏）
-            available_geometry = screen.availableGeometry()  # 可用几何信息（不包括任务栏）
-            
-            logger.debug(f"屏幕总尺寸: {screen_geometry.width()}x{screen_geometry.height()}")
-            logger.debug(f"可用区域: {available_geometry.width()}x{available_geometry.height()}")
-            
-            # 设置覆盖任务栏的全屏尺寸
-            # 使用屏幕总几何信息而不是可用几何信息
-            self.blackboard_widget.setGeometry(screen_geometry)
-
-            # 初始化当前课程高亮
-            self.update_blackboard_current_course_highlight()
-
-            # 初始化倒计时显示
-            self.update_blackboard_countdown()
-            
-            # 设置初始透明度为0（完全透明）
-            self.blackboard_widget.setWindowOpacity(0.0)
-            
-            # 显示窗口
-            self.blackboard_widget.show()
-            
-            # 确保窗口获得焦点并置顶
-            self.blackboard_widget.raise_()
-            self.blackboard_widget.activateWindow()
-            
-            # 创建淡入动画
-            self.blackboard_animation = QPropertyAnimation(self.blackboard_widget, b"windowOpacity")
-            self.blackboard_animation.setDuration(500)  # 500毫秒
-            self.blackboard_animation.setStartValue(0.0)
-            self.blackboard_animation.setEndValue(1.0)
-            self.blackboard_animation.setEasingCurve(QEasingCurve.InOutQuad)
-            
-            # 开始动画
-            self.blackboard_animation.start()
-            
-            # 更新状态
-            self.is_blackboard_mode = True
-
-            
-            logger.info("熄屏模式显示完成，覆盖任务栏全屏")
+                logger.debug(f"屏幕总尺寸: {screen_geometry.width()}x{screen_geometry.height()}")
+                
+                # 设置覆盖任务栏的全屏尺寸
+                self.special_mode_manager.widget.setGeometry(screen_geometry)
+                
+                # 设置模式状态
+                self.special_mode_manager.is_active = True
+                
+                # 应用目标模式样式
+                self.special_mode_manager.apply_mode_styles(mode == 'blackboard')
+                
+                # 设置初始透明度为0（完全透明）
+                self.special_mode_manager.widget.setWindowOpacity(0.0)
+                
+                # 显示窗口
+                self.special_mode_manager.widget.show()
+                
+                # 确保窗口获得焦点并置顶
+                self.special_mode_manager.widget.raise_()
+                self.special_mode_manager.widget.activateWindow()
+                
+                # 创建淡入动画
+                self.special_mode_animation = QPropertyAnimation(self.special_mode_manager.widget, b"windowOpacity")
+                self.special_mode_animation.setDuration(500)  # 500毫秒
+                self.special_mode_animation.setStartValue(0.0)
+                self.special_mode_animation.setEndValue(1.0)
+                self.special_mode_animation.setEasingCurve(QEasingCurve.InOutQuad)
+                
+                # 开始动画
+                self.special_mode_animation.start()
+                
+                # 初始化鼠标检测
+                self.init_mouse_detection()
+                
+                logger.info(f"{self.get_mode_name(mode)}模式显示完成，覆盖任务栏全屏")
+            else:
+                # 如果已经存在特殊模式管理器，直接切换样式
+                logger.info(f"已存在特殊模式，直接切换到{self.get_mode_name(mode)}模式")
+                self.special_mode_manager.apply_mode_styles(mode == 'blackboard')
+                
+                # 确保窗口显示
+                if not self.special_mode_manager.widget.isVisible():
+                    self.special_mode_manager.widget.show()
+                    self.special_mode_manager.widget.raise_()
+                    self.special_mode_manager.widget.activateWindow()
+                
+                # 确保鼠标检测运行
+                self.init_mouse_detection()
             
         except Exception as e:
-            logger.error(f"显示熄屏模式失败: {e}")
-
-    def close_blackboard(self):
-        """关闭熄屏模式（带淡出动画）"""
+            logger.error(f"显示{self.get_mode_name(mode)}模式失败: {e}")
+            # 如果出现异常，重置状态
+            self.special_mode_manager = None
+    
+    def close_special_mode(self):
+        """关闭特殊模式（带淡出动画）"""
         try:
             from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
         
-            # 如果不在熄屏模式，直接返回
-            if not self.is_blackboard_mode or not self.blackboard_widget:
+            # 如果不在特殊模式，直接返回
+            if not self.special_mode_manager or not self.special_mode_manager.widget:
                 return
                 
-            logger.info("关闭熄屏模式")
+            logger.info(f"关闭特殊模式")
             
             # 确保鼠标显示
-            self.show_mouse()
+            self.show_mouse_safe()
             
             # 停止鼠标检测计时器
             self.stop_mouse_detection()
             
             # 创建淡出动画
-            self.blackboard_animation = QPropertyAnimation(self.blackboard_widget, b"windowOpacity")
-            self.blackboard_animation.setDuration(500)  # 500毫秒
-            self.blackboard_animation.setStartValue(1.0)
-            self.blackboard_animation.setEndValue(0.0)
-            self.blackboard_animation.setEasingCurve(QEasingCurve.InOutQuad)
+            self.special_mode_animation = QPropertyAnimation(self.special_mode_manager.widget, b"windowOpacity")
+            self.special_mode_animation.setDuration(500)  # 500毫秒
+            self.special_mode_animation.setStartValue(1.0)
+            self.special_mode_animation.setEndValue(0.0)
+            self.special_mode_animation.setEasingCurve(QEasingCurve.InOutQuad)
             
             # 动画结束后关闭窗口
-            self.blackboard_animation.finished.connect(self._on_blackboard_animation_finished)
+            self.special_mode_animation.finished.connect(self._on_special_mode_animation_finished)
             
             # 开始动画
-            self.blackboard_animation.start()
+            self.special_mode_animation.start()
             
         except Exception as e:
-            logger.error(f"关闭熄屏模式失败: {e}")
-
-    def _on_blackboard_animation_finished(self):
-        """熄屏模式动画结束回调"""
-        try:
-            # 停止进度条动画
-            if self.blackboard_progress_animation:
-                self.blackboard_progress_animation.stop()
-                  
-            # 停止鼠标检测
-            self.stop_mouse_detection()
-
-            # 关闭窗口
-            if self.blackboard_widget:
-                self.blackboard_widget.close()
-                self.blackboard_widget.deleteLater()
-                self.blackboard_widget = None
-                self.blackboard_lesson_layout = None
-                self.blackboard_course_frames.clear()
-            
-            # 更新状态
-            self.is_blackboard_mode = False
-            self.current_blackboard_progress = 0
-            
-            logger.info("熄屏模式已关闭")
-            
-        except Exception as e:
-            logger.error(f"熄屏模式动画结束处理失败: {e}")
-
-    def show_whiteboard(self):
-        """显示白板模式（带淡入动画，覆盖任务栏全屏）"""
-        try:
-            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
-            
-            # 如果已经在白板模式，直接返回
-            if self.is_whiteboard_mode:
-                return
-                
-            logger.info("开启白板模式")
-            
-            # 初始化白板模式UI
-            if not self.init_whiteboard_ui():
-                logger.error("白板模式UI初始化失败")
-                return
-                
-            # 获取屏幕信息，包括任务栏区域
-            screen = QApplication.primaryScreen()
-            screen_geometry = screen.geometry()  # 屏幕总几何信息（包括任务栏）
-            available_geometry = screen.availableGeometry()  # 可用几何信息（不包括任务栏）
-            
-            logger.debug(f"屏幕总尺寸: {screen_geometry.width()}x{screen_geometry.height()}")
-            logger.debug(f"可用区域: {available_geometry.width()}x{available_geometry.height()}")
-            
-            # 设置覆盖任务栏的全屏尺寸
-            # 使用屏幕总几何信息而不是可用几何信息
-            self.whiteboard_widget.setGeometry(screen_geometry)
-
-            # 初始化当前课程高亮
-            self.update_whiteboard_current_course_highlight()
-
-            # 初始化倒计时显示
-            self.update_whiteboard_countdown()
-            
-            # 设置初始透明度为0（完全透明）
-            self.whiteboard_widget.setWindowOpacity(0.0)
-            
-            # 显示窗口
-            self.whiteboard_widget.show()
-            
-            # 确保窗口获得焦点并置顶
-            self.whiteboard_widget.raise_()
-            self.whiteboard_widget.activateWindow()
-            
-            # 创建淡入动画
-            self.whiteboard_animation = QPropertyAnimation(self.whiteboard_widget, b"windowOpacity")
-            self.whiteboard_animation.setDuration(500)  # 500毫秒
-            self.whiteboard_animation.setStartValue(0.0)
-            self.whiteboard_animation.setEndValue(1.0)
-            self.whiteboard_animation.setEasingCurve(QEasingCurve.InOutQuad)
-            
-            # 开始动画
-            self.whiteboard_animation.start()
-            
-            # 更新状态
-            self.is_whiteboard_mode = True
-            
-            logger.info("白板模式显示完成，覆盖任务栏全屏")
-            
-        except Exception as e:
-            logger.error(f"显示白板模式失败: {e}")
-
-    def close_whiteboard(self):
-        """关闭白板模式（带淡出动画）"""
-        try:
-            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
-        
-            # 如果不在白板模式，直接返回
-            if not self.is_whiteboard_mode or not self.whiteboard_widget:
-                return
-                
-            logger.info("关闭白板模式")
-            
-            # 确保鼠标显示
-            self.show_mouse()
-            
-            # 停止鼠标检测计时器
-            self.stop_mouse_detection()
-            
-            # 创建淡出动画
-            self.whiteboard_animation = QPropertyAnimation(self.whiteboard_widget, b"windowOpacity")
-            self.whiteboard_animation.setDuration(500)  # 500毫秒
-            self.whiteboard_animation.setStartValue(1.0)
-            self.whiteboard_animation.setEndValue(0.0)
-            self.whiteboard_animation.setEasingCurve(QEasingCurve.InOutQuad)
-            
-            # 动画结束后关闭窗口
-            self.whiteboard_animation.finished.connect(self._on_whiteboard_animation_finished)
-            
-            # 开始动画
-            self.whiteboard_animation.start()
-            
-        except Exception as e:
-            logger.error(f"关闭白板模式失败: {e}")
-
+            logger.error(f"关闭特殊模式失败: {e}")
     
-    def _on_whiteboard_animation_finished(self):
-        """白板模式动画结束回调"""
+    def _on_special_mode_animation_finished(self):
+        """特殊模式动画结束回调"""
         try:
             # 停止进度条动画
-            if self.whiteboard_progress_animation:
-                self.whiteboard_progress_animation.stop()
-                
+            if self.special_mode_manager and self.special_mode_manager.progress_animation:
+                self.special_mode_manager.progress_animation.stop()
+                    
             # 停止鼠标检测
             self.stop_mouse_detection()
-                
-            # 关闭窗口
-            if self.whiteboard_widget:
-                self.whiteboard_widget.close()
-                self.whiteboard_widget.deleteLater()
-                self.whiteboard_widget = None
-                self.whiteboard_lesson_layout = None
-                self.whiteboard_course_frames.clear()
             
-            # 更新状态
-            self.is_whiteboard_mode = False
-            self.current_whiteboard_progress = 0
+            # 清理窗口资源
+            self._cleanup_special_mode_window()
             
-            logger.info("白板模式已关闭")
+            logger.info(f"特殊模式动画完成")
             
         except Exception as e:
-            logger.error(f"白板模式动画结束处理失败: {e}")
-
-    def update_blackboard_current_course_highlight(self):
-        """更新熄屏模式当前课程高亮显示"""
+            logger.error(f"特殊模式动画结束处理失败: {e}")
+    
+    def _cleanup_special_mode_window(self):
+        """清理特殊模式窗口资源"""
         try:
-            # 如果不在熄屏模式，直接返回
-            if not self.is_blackboard_mode or not self.blackboard_course_frames:
+            if self.special_mode_manager:
+                logger.debug("开始清理特殊模式窗口")
+                self.special_mode_manager.cleanup()
+                self.special_mode_manager = None
+            
+        except Exception as e:
+            logger.error(f"清理特殊模式窗口失败: {e}")
+    
+    def switch_special_mode(self):
+        """切换特殊模式（熄屏<->白板）"""
+        try:
+            if not self.special_mode_manager or not self.special_mode_manager.is_active:
+                logger.warning("当前不在特殊模式，无法切换")
+                return
+                
+            # 获取当前模式并计算目标模式
+            current_is_blackboard = (self.special_mode_manager.current_mode == 'blackboard')
+            target_is_blackboard = not current_is_blackboard
+            
+            logger.info(f"切换特殊模式: {'熄屏' if current_is_blackboard else '白板'} -> {'熄屏' if target_is_blackboard else '白板'}")
+            
+            # 直接切换样式，不执行淡出淡入动画
+            self.special_mode_manager.apply_mode_styles(target_is_blackboard)
+            
+            # 保持鼠标检测运行
+            if not self.mouse_hide_timer or not self.mouse_hide_timer.isActive():
+                self.init_mouse_detection()
+            
+        except Exception as e:
+            logger.error(f"切换特殊模式失败: {e}")
+    
+    def update_special_mode_current_course_highlight(self):
+        """更新特殊模式当前课程高亮显示"""
+        try:
+            # 如果不在特殊模式，直接返回
+            if not self.special_mode_manager or not self.special_mode_manager.is_active or not self.special_mode_manager.course_frames:
                 return
                 
             # 计算当前课程
@@ -3442,24 +3851,28 @@ class Plugin(PluginBase):
             current_state = self.app_contexts.get('State', 0)
             
             # 如果当前课程和状态都没有变化，直接返回
-            if (current_course_id == self.blackboard_current_course_id and 
-                current_state == self.blackboard_current_state):
+            if (current_course_id == self.special_mode_manager.current_course_id and 
+                current_state == self.special_mode_manager.current_state):
                 return
                 
             # 移除之前的高亮
-            if (self.blackboard_previous_highlight_id and 
-                self.blackboard_previous_highlight_id in self.blackboard_course_frames):
-                previous_frame = self.blackboard_course_frames[self.blackboard_previous_highlight_id]
+            if (self.special_mode_manager.previous_highlight_id and 
+                self.special_mode_manager.previous_highlight_id in self.special_mode_manager.course_frames):
+                previous_frame = self.special_mode_manager.course_frames[self.special_mode_manager.previous_highlight_id]
                 previous_frame.setStyleSheet("border-radius: 20px; background-color: none")
                 
                 # 恢复标签颜色
                 label = previous_frame.findChild(QLabel)
                 if label:
-                    label.setStyleSheet("border: none; color: rgb(255, 255, 255); font-weight: bold; background: none;")
+                    # 根据当前模式设置颜色
+                    if self.special_mode_manager.current_mode == 'blackboard':
+                        label.setStyleSheet("border: none; color: rgb(255, 255, 255); font-weight: bold; background: none;")
+                    else:
+                        label.setStyleSheet("border: none; color: rgb(0, 0, 0); font-weight: bold; background: none;")
             
             # 设置新的高亮
-            if current_course_id and current_course_id in self.blackboard_course_frames:
-                current_frame = self.blackboard_course_frames[current_course_id]
+            if current_course_id and current_course_id in self.special_mode_manager.course_frames:
+                current_frame = self.special_mode_manager.course_frames[current_course_id]
                 
                 # 根据状态设置颜色
                 if current_state == 0:  # 课间
@@ -3467,7 +3880,7 @@ class Plugin(PluginBase):
                 else:  # 上课
                     bg_color = "#e98f83"
                     
-                current_frame.setStyleSheet(f"border-radius: 20px; background-color: {bg_color};")
+                current_frame.setStyleSheet(f"border-radius: 20px; background: qlineargradient(x1:-0.2, y1:-0.2, x2:0.8, y2:0.8,stop:0 #b4dfff,stop:1 {bg_color})")
                 
                 # 设置标签颜色为白色
                 label = current_frame.findChild(QLabel)
@@ -3475,107 +3888,53 @@ class Plugin(PluginBase):
                     label.setStyleSheet("border: none; color: #ffffff; font-weight: bold; background: none;")
                 
                 # 更新状态
-                self.blackboard_previous_highlight_id = current_course_id
-                self.blackboard_current_course_id = current_course_id
-                self.blackboard_current_state = current_state
+                self.special_mode_manager.previous_highlight_id = current_course_id
+                self.special_mode_manager.current_course_id = current_course_id
+                self.special_mode_manager.current_state = current_state
                 
-                logger.debug(f"更新熄屏模式课程高亮: {current_course_id}, 状态: {current_state}, 颜色: {bg_color}")
+                logger.debug(f"更新特殊模式课程高亮: {current_course_id}, 状态: {current_state}, 颜色: {bg_color}")
             
         except Exception as e:
-            logger.error(f"更新熄屏模式课程高亮失败: {e}")
-
-    def update_whiteboard_current_course_highlight(self):
-        """更新白板模式当前课程高亮显示"""
+            logger.error(f"更新特殊模式课程高亮失败: {e}")
+    
+    def update_special_mode_countdown(self):
+        """更新特殊模式倒计时显示"""
         try:
-            # 如果不在白板模式，直接返回
-            if not self.is_whiteboard_mode or not self.whiteboard_course_frames:
-                return
-                
-            # 计算当前课程
-            current_course_id = self.calculate_current_course()
-            current_state = self.app_contexts.get('State', 0)
-            
-            # 如果当前课程和状态都没有变化，直接返回
-            if (current_course_id == self.whiteboard_current_course_id and 
-                current_state == self.whiteboard_current_state):
-                return
-                
-            # 移除之前的高亮
-            if (self.whiteboard_previous_highlight_id and 
-                self.whiteboard_previous_highlight_id in self.whiteboard_course_frames):
-                previous_frame = self.whiteboard_course_frames[self.whiteboard_previous_highlight_id]
-                previous_frame.setStyleSheet("border-radius: 20px; background-color: none")
-                
-                # 恢复标签颜色
-                label = previous_frame.findChild(QLabel)
-                if label:
-                    label.setStyleSheet("border: none; color: rgb(0, 0, 0); font-weight: bold; background: none;")
-            
-            # 设置新的高亮
-            if current_course_id and current_course_id in self.whiteboard_course_frames:
-                current_frame = self.whiteboard_course_frames[current_course_id]
-                
-                # 根据状态设置颜色
-                if current_state == 0:  # 课间
-                    bg_color = "#57c7a5"
-                else:  # 上课
-                    bg_color = "#e98f83"
-                    
-                current_frame.setStyleSheet(f"border-radius: 20px; background-color: {bg_color};")
-                
-                # 设置标签颜色为白色
-                label = current_frame.findChild(QLabel)
-                if label:
-                    label.setStyleSheet("border: none; color: #ffffff; font-weight: bold; background: none;")
-                
-                # 更新状态
-                self.whiteboard_previous_highlight_id = current_course_id
-                self.whiteboard_current_course_id = current_course_id
-                self.whiteboard_current_state = current_state
-                
-                logger.debug(f"更新白板模式课程高亮: {current_course_id}, 状态: {current_state}, 颜色: {bg_color}")
-            
-        except Exception as e:
-            logger.error(f"更新白板模式课程高亮失败: {e}")
-
-    def update_blackboard_countdown(self):
-        """更新熄屏模式倒计时显示（带动画）"""
-        try:
-            if not self.is_blackboard_mode or not self.blackboard_widget:
+            if not self.special_mode_manager or not self.special_mode_manager.is_active or not self.special_mode_manager.widget:
                 return
                 
             # 获取倒计时标签和进度条
-            countdown_label = self.blackboard_widget.findChild(QLabel, "countdown")
-            countdown_progress = self.blackboard_widget.findChild(QObject, "countdown_progressBar")
+            countdown_label = self.special_mode_manager.widget.findChild(QLabel, "countdown")
+            countdown_progress = self.special_mode_manager.widget.findChild(QObject, "countdown_progressBar")
             
             if not countdown_label or not countdown_progress:
-                logger.warning("未找到熄屏模式倒计时控件")
+                logger.warning("未找到特殊模式倒计时控件")
                 return
             
             # 获取当前活动时间信息
             time_info = self.get_current_activity_time_info()
             
             # 修改判断逻辑：只有当整个time_info为None时才显示默认值
-            if time_info is None:
+            if time_info is None or time_info[0] is None and time_info[1] is None:
                 # 没有活动数据，显示默认值
                 countdown_label.setText("< - 分钟")
                 if hasattr(countdown_progress, 'setVal'):
                     # 使用动画设置进度条为0
-                    self.animate_blackboard_progress(0)
+                    self.special_mode_manager.animate_progress(0)
                 # 移除高亮显示
-                self.clear_blackboard_highlight()
-                logger.debug("没有活动数据，显示默认倒计时")
+                self.clear_special_mode_highlight()
+                logger.debug("没有有效的活动数据，显示默认倒计时")
                 return
                 
             total_seconds, remaining_seconds, activity_id, state = time_info
             
-            # 检查remaining_seconds是否为None，如果是则显示默认值
+            # 检查remaining_seconds是否为None
             if remaining_seconds is None:
                 countdown_label.setText("< - 分钟")
                 if hasattr(countdown_progress, 'setVal'):
-                    self.animate_blackboard_progress(0)
+                    self.special_mode_manager.animate_progress(0)
                 # 移除高亮显示
-                self.clear_blackboard_highlight()
+                self.clear_special_mode_highlight()
                 logger.debug("剩余时间为None，显示默认倒计时")
                 return
             
@@ -3593,13 +3952,13 @@ class Plugin(PluginBase):
             if total_seconds is None:
                 # 总时长为None，表示活动尚未开始，进度条显示100%
                 progress_percentage = 100
-                self.animate_blackboard_progress(progress_percentage)
+                self.special_mode_manager.animate_progress(progress_percentage)
                 logger.debug("活动尚未开始，进度条设为100%")
             elif total_seconds > 0:
                 progress_percentage = int(((total_seconds - remaining_seconds) / total_seconds) * 100)
                 progress_percentage = max(0, min(100, progress_percentage))  # 限制在0-100之间
                 
-                self.animate_blackboard_progress(progress_percentage)
+                self.special_mode_manager.animate_progress(progress_percentage)
                 logger.debug(f"活动进行中，进度条设为{progress_percentage}%")
             
             # 根据状态设置进度条颜色
@@ -3608,7 +3967,7 @@ class Plugin(PluginBase):
             else:  # 上课
                 progress_color = "#e98f83"
                 
-            # 设置进度条颜色（需要根据ProgressRing的实际API调整）
+            # 设置进度条颜色
             progress_style = f"""
                 ProgressRing {{
                     background-color: transparent;
@@ -3619,300 +3978,116 @@ class Plugin(PluginBase):
             """
             countdown_progress.setStyleSheet(progress_style)
             
-            logger.debug(f"更新熄屏模式倒计时完成: 进度{progress_percentage if 'progress_percentage' in locals() else 'N/A'}%, 颜色: {progress_color}")
-            
+            logger.debug(f"更新特殊模式倒计时完成: 进度{progress_percentage if 'progress_percentage' in locals() else 'N/A'}%, 颜色: {progress_color}")
+
         except Exception as e:
-            logger.error(f"更新熄屏模式倒计时失败: {e}")
+            logger.error(f"更新特殊模式倒计时失败: {e}")
             # 出错时也显示默认值
             try:
-                countdown_label = self.blackboard_widget.findChild(QLabel, "countdown")
-                countdown_progress = self.blackboard_widget.findChild(QObject, "countdown_progressBar")
+                countdown_label = self.special_mode_manager.widget.findChild(QLabel, "countdown")
+                countdown_progress = self.special_mode_manager.widget.findChild(QObject, "countdown_progressBar")
                 if countdown_label:
                     countdown_label.setText("< - 分钟")
                 if countdown_progress and hasattr(countdown_progress, 'setVal'):
-                    self.animate_blackboard_progress(0)
+                    self.special_mode_manager.animate_progress(0)
                 # 移除高亮显示
-                self.clear_blackboard_highlight()
+                self.clear_special_mode_highlight()
             except:
                 pass
-
-    def clear_blackboard_highlight(self):
-        """清除熄屏模式的高亮显示"""
+    
+    def clear_special_mode_highlight(self):
+        """清除特殊模式的高亮显示"""
         try:
-            if not self.is_blackboard_mode or not self.blackboard_course_frames:
+            if not self.special_mode_manager or not self.special_mode_manager.is_active or not self.special_mode_manager.course_frames:
                 return
                 
             # 移除所有高亮
-            for course_id, frame in self.blackboard_course_frames.items():
+            for course_id, frame in self.special_mode_manager.course_frames.items():
                 frame.setStyleSheet("border-radius: 20px; background-color: none")
                 label = frame.findChild(QLabel)
                 if label:
-                    label.setStyleSheet("border: none; color: rgb(255, 255, 255); font-weight: bold; background: none;")
+                    # 根据当前模式设置颜色
+                    if self.special_mode_manager.current_mode == 'blackboard':
+                        label.setStyleSheet("border: none; color: rgb(255, 255, 255); font-weight: bold; background: none;")
+                    else:
+                        label.setStyleSheet("border: none; color: rgb(0, 0, 0); font-weight: bold; background: none;")
             
             # 重置状态
-            self.blackboard_previous_highlight_id = None
-            self.blackboard_current_course_id = None
-            self.blackboard_current_state = None
+            self.special_mode_manager.previous_highlight_id = None
+            self.special_mode_manager.current_course_id = None
+            self.special_mode_manager.current_state = None
             
-            logger.debug("已清除熄屏模式高亮显示")
+            logger.debug("已清除特殊模式高亮显示")
             
         except Exception as e:
-            logger.error(f"清除熄屏模式高亮失败: {e}")
-
-    def clear_whiteboard_highlight(self):
-        """清除白板模式的高亮显示"""
+            logger.error(f"清除特殊模式高亮失败: {e}")
+    
+    def update_special_mode_countdown_day(self):
+        """更新特殊模式倒计日显示"""
         try:
-            if not self.is_whiteboard_mode or not self.whiteboard_course_frames:
+            if not self.special_mode_manager or not self.special_mode_manager.widget:
                 return
                 
-            # 移除所有高亮
-            for course_id, frame in self.whiteboard_course_frames.items():
-                frame.setStyleSheet("border-radius: 20px; background-color: none")
-                label = frame.findChild(QLabel)
-                if label:
-                    label.setStyleSheet("border: none; color: rgb(0, 0, 0); font-weight: bold; background: none;")
-            
-            # 重置状态
-            self.whiteboard_previous_highlight_id = None
-            self.whiteboard_current_course_id = None
-            self.whiteboard_current_state = None
-            
-            logger.debug("已清除白板模式高亮显示")
+            self.special_mode_manager.update_countdown_day()
             
         except Exception as e:
-            logger.error(f"清除白板模式高亮失败: {e}")
-
-    def update_whiteboard_countdown(self):
-        """更新白板模式倒计时显示（带动画）"""
-        try:
-            if not self.is_whiteboard_mode or not self.whiteboard_widget:
-                return
-                
-            # 获取倒计时标签和进度条
-            countdown_label = self.whiteboard_widget.findChild(QLabel, "countdown")
-            countdown_progress = self.whiteboard_widget.findChild(QObject, "countdown_progressBar")
-            
-            if not countdown_label or not countdown_progress:
-                logger.warning("未找到白板模式倒计时控件")
-                return
-            
-            # 获取当前活动时间信息
-            time_info = self.get_current_activity_time_info()
-
-            # 修改判断逻辑：只有当整个time_info为None时才显示默认值
-            if time_info is None:
-                # 没有活动数据，显示默认值
-                countdown_label.setText("< - 分钟")
-                if hasattr(countdown_progress, 'setVal'):
-                    # 使用动画设置进度条为0
-                    self.animate_whiteboard_progress(0)
-                # 移除高亮显示
-                self.clear_whiteboard_highlight()
-                logger.debug("没有活动数据，显示默认倒计时")
-                return
-                
-            total_seconds, remaining_seconds, activity_id, state = time_info
-            
-            # 检查remaining_seconds是否为None，如果是则显示默认值
-            if remaining_seconds is None:
-                countdown_label.setText("< - 分钟")
-                if hasattr(countdown_progress, 'setVal'):
-                    self.animate_whiteboard_progress(0)
-                # 移除高亮显示
-                self.clear_whiteboard_highlight()
-                logger.debug("剩余时间为None，显示默认倒计时")
-                return
-            
-            # 更新倒计时文本
-            if remaining_seconds >= 60:
-                # 大于等于1分钟，显示分钟（向上取整）
-                minutes = (remaining_seconds + 59) // 60  # 向上取整
-                countdown_label.setText(f"< {minutes} 分钟")
-            else:
-                # 小于1分钟，显示秒（向上取整）
-                seconds = max(1, remaining_seconds)  # 至少显示1秒
-                countdown_label.setText(f"< {seconds} 秒")
-            
-            # 更新进度条（使用动画）
-            if total_seconds is None:
-                # 总时长为None，表示活动尚未开始，进度条显示100%
-                progress_percentage = 100
-                self.animate_whiteboard_progress(progress_percentage)
-                logger.debug("活动尚未开始，进度条设为100%")
-            elif total_seconds > 0:
-                progress_percentage = int(((total_seconds - remaining_seconds) / total_seconds) * 100)
-                progress_percentage = max(0, min(100, progress_percentage))  # 限制在0-100之间
-                
-                self.animate_whiteboard_progress(progress_percentage)
-                logger.debug(f"活动进行中，进度条设为{progress_percentage}%")
-            
-            # 根据状态设置进度条颜色（和熄屏模式一样）
-            if state == 0:  # 课间
-                progress_color = "#57c7a5"
-            else:  # 上课
-                progress_color = "#e98f83"
-                
-            # 设置进度条颜色（需要根据ProgressRing的实际API调整）
-            progress_style = f"""
-                ProgressRing {{
-                    background-color: transparent;
-                }}
-                ProgressRing::chunk {{
-                    background-color: {progress_color};
-                }}
-            """
-            countdown_progress.setStyleSheet(progress_style)
-            
-            logger.debug(f"更新白板模式倒计时: 进度{progress_percentage}%, 颜色: {progress_color}")
-            
-        except Exception as e:
-            logger.error(f"更新白板模式倒计时失败: {e}")
-            # 出错时也显示默认值
-            try:
-                countdown_label = self.whiteboard_widget.findChild(QLabel, "countdown")
-                countdown_progress = self.whiteboard_widget.findChild(QObject, "countdown_progressBar")
-                if countdown_label:
-                    countdown_label.setText("< - 分钟")
-                if countdown_progress and hasattr(countdown_progress, 'setVal'):
-                    self.animate_whiteboard_progress(0)
-                # 移除高亮显示
-                self.clear_whiteboard_highlight()
-            except:
-                pass
-
-    def switch_to_blackboard_from_whiteboard(self):
-        """从白板模式切换到熄屏模式"""
-        try:
-            logger.info("从白板模式切换到熄屏模式")
-            # 先关闭白板模式
-            self.close_whiteboard()
-            # 然后打开熄屏模式
-            self.show_blackboard()
-        except Exception as e:
-            logger.error(f"从白板模式切换到熄屏模式失败: {e}")
-
-    def switch_to_whiteboard_from_blackboard(self):
-        """从熄屏模式切换到白板模式"""
-        try:
-            logger.info("从熄屏模式切换到白板模式")
-            # 先关闭熄屏模式
-            self.close_blackboard()
-            # 然后打开白板模式
-            self.show_whiteboard()
-        except Exception as e:
-            logger.error(f"从熄屏模式切换到白板模式失败: {e}")
-
-    def init_blackboard_progress_animation(self):
-        """初始化熄屏模式进度条动画"""
-        try:
-            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
-            
-            countdown_progress = self.blackboard_widget.findChild(QObject, "countdown_progressBar")
-            if countdown_progress:
-                self.blackboard_progress_animation = QPropertyAnimation(countdown_progress, b"val")
-                self.blackboard_progress_animation.setDuration(800)  # 800毫秒动画时长
-                self.blackboard_progress_animation.setEasingCurve(QEasingCurve.OutCubic)
-                self.current_blackboard_progress = 0
-                logger.debug("初始化熄屏模式进度条动画完成")
-        except Exception as e:
-            logger.error(f"初始化熄屏模式进度条动画失败: {e}")
-
-    def init_whiteboard_progress_animation(self):
-        """初始化白板模式进度条动画"""
-        try:
-            from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
-            
-            countdown_progress = self.whiteboard_widget.findChild(QObject, "countdown_progressBar")
-            if countdown_progress:
-                self.whiteboard_progress_animation = QPropertyAnimation(countdown_progress, b"val")
-                self.whiteboard_progress_animation.setDuration(800)  # 800毫秒动画时长
-                self.whiteboard_progress_animation.setEasingCurve(QEasingCurve.OutCubic)
-                self.current_whiteboard_progress = 0
-                logger.debug("初始化白板模式进度条动画完成")
-        except Exception as e:
-            logger.error(f"初始化白板模式进度条动画失败: {e}")
-
-    def animate_blackboard_progress(self, target_progress):
-        """动画更新熄屏模式进度条"""
-        try:
-            if (not self.blackboard_progress_animation or 
-                not self.is_blackboard_mode or 
-                not self.blackboard_widget):
-                return
-                
-            countdown_progress = self.blackboard_widget.findChild(QObject, "countdown_progressBar")
-            if not countdown_progress:
-                return
-                
-            # 停止当前动画
-            self.blackboard_progress_animation.stop()
-            
-            # 设置动画范围
-            self.blackboard_progress_animation.setStartValue(self.current_blackboard_progress)
-            self.blackboard_progress_animation.setEndValue(target_progress)
-            
-            # 开始动画
-            self.blackboard_progress_animation.start()
-            
-            # 更新当前进度
-            self.current_blackboard_progress = target_progress
-            
-        except Exception as e:
-            logger.error(f"熄屏模式进度条动画失败: {e}")
-
-    def animate_whiteboard_progress(self, target_progress):
-        """动画更新白板模式进度条"""
-        try:
-            if (not self.whiteboard_progress_animation or 
-                not self.is_whiteboard_mode or 
-                not self.whiteboard_widget):
-                return
-                
-            countdown_progress = self.whiteboard_widget.findChild(QObject, "countdown_progressBar")
-            if not countdown_progress:
-                return
-                
-            # 停止当前动画
-            self.whiteboard_progress_animation.stop()
-            
-            # 设置动画范围
-            self.whiteboard_progress_animation.setStartValue(self.current_whiteboard_progress)
-            self.whiteboard_progress_animation.setEndValue(target_progress)
-            
-            # 开始动画
-            self.whiteboard_progress_animation.start()
-            
-            # 更新当前进度
-            self.current_whiteboard_progress = target_progress
-            
-        except Exception as e:
-            logger.error(f"白板模式进度条动画失败: {e}")
+            logger.error(f"更新特殊模式倒计日失败: {e}")
+    
+    def get_mode_name(self, mode):
+        """获取模式名称"""
+        if mode == 'blackboard':
+            return "熄屏"
+        elif mode == 'whiteboard':
+            return "白板"
+        else:
+            return "未知"
 
     def init_mouse_detection(self):
-        """初始化鼠标检测"""
+        """初始化鼠标检测 - 用于特殊模式"""
         try:
+            # 首先确保停止旧的鼠标检测
+            self.stop_mouse_detection()
+            
             # 重置鼠标状态
             self.mouse_hidden = False
             self.mouse_stationary_time = 0
             self.last_mouse_position = None
             
-            # 创建鼠标检测计时器
-            if not self.mouse_hide_timer:
-                self.mouse_hide_timer = QTimer()
-                self.mouse_hide_timer.timeout.connect(self.check_mouse_movement)
+            # 检查是否在特殊模式
+            if not self.special_mode_manager or not self.special_mode_manager.is_active:
+                logger.debug("当前不在特殊模式，跳过鼠标检测初始化")
+                return
+                
+            # 创建新的鼠标检测计时器
+            self.mouse_hide_timer = QTimer()
+            self.mouse_hide_timer.timeout.connect(self.check_mouse_movement)
             
             # 启动鼠标检测
             self.mouse_hide_timer.start(self.mouse_check_interval)
-            logger.info("鼠标检测已启动")
+            
+            mode_name = '熄屏' if self.special_mode_manager.current_mode == 'blackboard' else '白板'
+            logger.info(f"鼠标检测已启动 (模式: {mode_name}, 检查间隔: {self.mouse_check_interval}ms)")
+            
+            # 立即检查一次鼠标状态，确保鼠标可见
+            self.check_mouse_movement()
             
         except Exception as e:
             logger.error(f"初始化鼠标检测失败: {e}")
+            # 即使失败也要确保鼠标可见
+            self.show_mouse_safe()
 
     def check_mouse_movement(self):
-        """检查鼠标移动状态"""
+        """检查鼠标移动状态 - 用于特殊模式"""
         try:
-            # 只有在熄屏模式或白板模式下才检测鼠标
-            if not self.is_blackboard_mode and not self.is_whiteboard_mode:
+            # 确保只在特殊模式下检测鼠标
+            if not self.special_mode_manager or not self.special_mode_manager.is_active:
+                logger.debug("当前不在特殊模式，跳过鼠标检测")
+                return
+                
+            # 确保计时器正在运行
+            if not self.mouse_hide_timer or not self.mouse_hide_timer.isActive():
+                logger.warning("鼠标检测计时器未运行，重新初始化")
+                self.init_mouse_detection()
                 return
                 
             # 获取当前鼠标位置
@@ -3922,6 +4097,7 @@ class Plugin(PluginBase):
                 # 如果是第一次获取位置，直接记录
                 if self.last_mouse_position is None:
                     self.last_mouse_position = current_pos
+                    logger.debug(f"初始鼠标位置: {current_pos}")
                     return
                     
                 # 检查鼠标是否移动
@@ -3932,65 +4108,96 @@ class Plugin(PluginBase):
                     
                     if self.mouse_hidden:
                         self.show_mouse()
+                        logger.debug(f"鼠标移动，显示鼠标 (位置: {current_pos})")
                 else:
                     # 鼠标静止，增加静止时间
                     self.mouse_stationary_time += self.mouse_check_interval / 1000.0
                     
                     # 如果静止时间超过阈值且鼠标未隐藏，则隐藏鼠标
-                    if self.mouse_stationary_time >= (self.mouse_hide_delay / 1000.0) and not self.mouse_hidden:
+                    if (self.mouse_stationary_time >= (self.mouse_hide_delay / 1000.0) 
+                            and not self.mouse_hidden):
                         self.hide_mouse()
-                        
+                        logger.debug(f"鼠标静止 {self.mouse_stationary_time:.1f} 秒，隐藏鼠标")
+            else:
+                logger.warning("无法获取鼠标位置")
+                
         except Exception as e:
             logger.error(f"检查鼠标移动失败: {e}")
 
     def hide_mouse(self):
-        """隐藏鼠标光标"""
+        """隐藏鼠标光标 - 用于特殊模式"""
         try:
             if not self.mouse_hidden:
-                # 只在熄屏模式或白板模式下隐藏鼠标
-                if self.is_blackboard_mode and self.blackboard_widget:
-                    self.blackboard_widget.setCursor(Qt.BlankCursor)
+                # 只在特殊模式下隐藏鼠标
+                if self.special_mode_manager and self.special_mode_manager.is_active and self.special_mode_manager.widget:
+                    self.special_mode_manager.widget.setCursor(Qt.BlankCursor)
                     self.mouse_hidden = True
-                    logger.debug("鼠标已隐藏（熄屏模式）")
-                elif self.is_whiteboard_mode and self.whiteboard_widget:
-                    self.whiteboard_widget.setCursor(Qt.BlankCursor)
-                    self.mouse_hidden = True
-                    logger.debug("鼠标已隐藏（白板模式）")
+                    mode_name = '熄屏' if self.special_mode_manager.current_mode == 'blackboard' else '白板'
+                    logger.debug(f"鼠标已隐藏（{mode_name}模式）")
+                else:
+                    logger.warning(f"尝试隐藏鼠标但不在特殊模式")
                     
         except Exception as e:
             logger.error(f"隐藏鼠标失败: {e}")
 
     def show_mouse(self):
-        """显示鼠标光标"""
+        """显示鼠标光标 - 用于特殊模式"""
         try:
             if self.mouse_hidden:
                 # 恢复默认鼠标光标
-                if self.is_blackboard_mode and self.blackboard_widget:
-                    self.blackboard_widget.unsetCursor()
+                if self.special_mode_manager and self.special_mode_manager.is_active and self.special_mode_manager.widget:
+                    self.special_mode_manager.widget.unsetCursor()
                     self.mouse_hidden = False
-                    logger.debug("鼠标已显示（熄屏模式）")
-                elif self.is_whiteboard_mode and self.whiteboard_widget:
-                    self.whiteboard_widget.unsetCursor()
-                    self.mouse_hidden = False
-                    logger.debug("鼠标已显示（白板模式）")
+                    mode_name = '熄屏' if self.special_mode_manager.current_mode == 'blackboard' else '白板'
+                    logger.debug(f"鼠标已显示（{mode_name}模式）")
+                else:
+                    logger.warning(f"尝试显示鼠标但不在特殊模式")
                     
         except Exception as e:
             logger.error(f"显示鼠标失败: {e}")
 
     def stop_mouse_detection(self):
-        """停止鼠标检测"""
+        """停止鼠标检测 - 修复版本"""
         try:
-            if self.mouse_hide_timer and self.mouse_hide_timer.isActive():
-                self.mouse_hide_timer.stop()
-                logger.info("鼠标检测已停止")
+            if self.mouse_hide_timer:
+                if self.mouse_hide_timer.isActive():
+                    self.mouse_hide_timer.stop()
+                    logger.debug("鼠标检测计时器已停止")
                 
-            # 重置鼠标状态
+                # 断开连接并删除计时器
+                try:
+                    self.mouse_hide_timer.timeout.disconnect()
+                except:
+                    pass
+                    
+                self.mouse_hide_timer.deleteLater()
+                self.mouse_hide_timer = None
+                
+            # 重置鼠标状态但不隐藏鼠标
             self.mouse_hidden = False
             self.mouse_stationary_time = 0
             self.last_mouse_position = None
             
+            # 确保鼠标显示（不依赖任何特定窗口）
+            self.show_mouse_safe()
+            
         except Exception as e:
             logger.error(f"停止鼠标检测失败: {e}")
+
+    def show_mouse_safe(self):
+        """安全显示鼠标（不依赖特定窗口）"""
+        try:
+            if self.mouse_hidden:
+                # 尝试通过应用级别的设置恢复鼠标
+                app = QApplication.instance()
+                if app:
+                    app.setOverrideCursor(Qt.ArrowCursor)
+                    app.restoreOverrideCursor()
+                
+                self.mouse_hidden = False
+                logger.debug("鼠标已安全显示")
+        except Exception as e:
+            logger.error(f"安全显示鼠标失败: {e}")
 
     def get_mouse_position(self):
         """获取鼠标位置"""
